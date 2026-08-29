@@ -2,7 +2,7 @@
 
 An end-to-end insurance data engineering project implementing a Medallion Architecture (Bronze → Silver → Gold) using PySpark, Databricks, Delta Lake, SQL, ClickHouse, and Metabase.
 
-The pipeline transforms raw insurance data into analytics-ready Gold tables and provides interactive BI dashboards.
+The pipeline transforms raw insurance data into analytics-ready Gold tables and provides interactive BI dashboards for business analysis.
 
 ---
 
@@ -13,12 +13,15 @@ Raw Data
     |
     v
 Bronze Layer
+(Raw Ingestion)
     |
     v
 Silver Layer
+(Cleaning & Transformation)
     |
     v
 Gold Layer
+(Business Aggregations)
     |
     v
 ClickHouse
@@ -54,11 +57,11 @@ The pipeline processes three main insurance domains:
 
 ---
 
-## Medallion Layers
+# Medallion Architecture
 
-### Bronze Layer
+## Bronze Layer
 
-Raw ingestion layer that stores source data with minimal transformation.
+The Bronze layer stores raw ingested data with minimal transformation.
 
 Tables:
 
@@ -70,9 +73,9 @@ bronze_policies
 
 ---
 
-### Silver Layer
+## Silver Layer
 
-Cleaning and transformation layer.
+The Silver layer performs data cleaning and standardization.
 
 Operations:
 
@@ -91,11 +94,13 @@ silver_policies
 
 ---
 
-### Gold Layer
+## Gold Layer
 
-Business-ready analytical tables designed for BI reporting.
+The Gold layer creates business-ready analytical tables for reporting and BI visualization.
 
-### Claims
+### Claims Analytics
+
+Tables:
 
 ```
 gold_claims_daily
@@ -103,7 +108,7 @@ gold_claims_weekly
 gold_claims_monthly
 ```
 
-Metrics:
+Includes:
 
 - Number of claims
 - Total claim amount
@@ -111,8 +116,11 @@ Metrics:
 - Rolling averages
 - Growth metrics
 
+---
 
-### Accidents
+### Accident Analytics
+
+Tables:
 
 ```
 gold_accidents_daily
@@ -120,21 +128,24 @@ gold_accidents_weekly
 gold_accidents_monthly
 ```
 
-Metrics:
+Includes:
 
 - Accident frequency
 - Accident trends
 - Time-based analysis
 - Geographic insights
 
+---
 
-### Policies
+### Policy Analytics
+
+Table:
 
 ```
 gold_policies_monthly
 ```
 
-Metrics:
+Includes:
 
 - Policies issued
 - Policies expired
@@ -145,43 +156,59 @@ Metrics:
 
 # Metabase Dashboard
 
-The Gold layer is connected to Metabase for interactive analytics and visualization.
+The Gold layer is connected to ClickHouse and visualized through Metabase dashboards.
 
-Dashboard sections:
+The dashboard provides interactive analytics across claims, accidents, and policies.
 
 ## Executive Overview
+
+Includes:
 
 - Total claims
 - Total claim amount
 - Total accidents
 - Total policies issued
-- Overall trends
+- Overall business trends
 
+---
 
 ## Claims Analysis
+
+Includes:
 
 - Monthly claim trends
 - Claim amount analysis
 - Claim amount breakdown by type
 - Claim severity analysis
+- Driver age trends
 
+---
 
 ## Accident Analysis
 
-- Monthly and weekly accident trends
+Includes:
+
+- Monthly accident trends
+- Weekly accident trends
 - Accident patterns
 - Location analysis
 
+---
 
 ## Policy Analysis
+
+Includes:
 
 - Policy growth trends
 - Exposure trends
 - Vehicle age analysis
-- Expiration trends
+- Policy expiration trends
 
+---
 
-Dashboard screenshots are available in:
+## Dashboard Screenshots
+
+Screenshots are available in:
 
 ```
 images/
@@ -205,7 +232,7 @@ images/
 
 ---
 
-## Project Structure
+# Project Structure
 
 ```
 insurance-data-engineering/
@@ -231,7 +258,7 @@ insurance-data-engineering/
 
 ---
 
-## How to Run
+# How to Run
 
 1. Clone the repository.
 
