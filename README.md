@@ -68,27 +68,41 @@ Schema definitions are available under:
 
 ## Project Structure
 
-    insurance-data-engineering/
+- `data/`
+  - `samples/`
+    - `mongodb/`
+      - `claims.json`: Sample insurance claims data from MongoDB.
+    - `mysql/`
+      - `policies.csv`: Sample insurance policies data from MySQL.
+    - `s3/`
+      - `external/`: Stores external input data.
+      - `tmp/`
+        - `claims.json`: Temporary claims data.
+  - `schemas/`
+    - `mongodb/`
+      - `claims.json`: MongoDB claims data schema.
+    - `s3/`
+      - `accidents.json`: S3 accident data schema.
+    - `sql/`
+      - `policies.json`: SQL policies data schema.
 
-    ├── README.md
+- `notebooks/`
+  - `bronze.py`: Loads and processes raw data in the Bronze layer.
+  - `silver-codex2.py`: Cleans and transforms data in the Silver layer.
+  - `gold.py`: Creates curated business-ready data in the Gold layer.
 
-    ├── notebooks/
-    │   ├── 01_bronze_layer.ipynb
-    │   ├── 02_silver_layer.ipynb
-    │   └── 03_gold_layer.ipynb
+- `setup/`
+  - `mongodb/`
+    - `config.sh`: MongoDB configuration script.
+    - `Dockerfile`: Docker image configuration for MongoDB.
+  - `sql/`
+    - `databricks/`
+      - `destroy.sql`: Removes Databricks resources or tables.
+    - `mysql/`
+      - `config.sql`: MySQL configuration script.
 
-    ├── schemas/
-    │   ├── claims_schema.json
-    │   ├── accidents_schema.json
-    │   └── policies_schema.json
-
-    ├── data/
-    │   └── README.md
-
-    ├── images/
-    │   └── medallion_architecture.png
-
-    └── requirements.txt
+- `requirements.txt`: Contains the required Python dependencies.
+- `README.md`: Contains the project documentation.
 
 ## Bronze Layer
 
