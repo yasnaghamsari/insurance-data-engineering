@@ -1,253 +1,262 @@
 # Insurance Data Engineering Pipeline
 
-A scalable data engineering project implementing a Medallion
-Architecture (Bronze → Silver → Gold) using PySpark, Databricks, and
-Delta Lake.
+An end-to-end insurance data engineering project implementing a Medallion Architecture (Bronze → Silver → Gold) using PySpark, Databricks, Delta Lake, SQL, ClickHouse, and Metabase.
 
-## Project Overview
+The pipeline transforms raw insurance data into analytics-ready Gold tables and provides interactive BI dashboards.
 
-This project builds an end-to-end insurance data pipeline that
-transforms raw policy, claims, and accident data into analytics-ready
-business tables.
-
-The pipeline includes:
-
--   Raw data ingestion
--   Data cleaning and standardization
--   Business-level aggregations
--   Preparation for BI analytics and dashboards
+---
 
 ## Architecture
 
-    Raw Data Sources
-            |
-            v
-    Bronze Layer
-    (Raw Ingestion)
-            |
-            v
-    Silver Layer
-    (Cleaning & Transformation)
-            |
-            v
-    Gold Layer
-    (Business Aggregations)
-            |
-            v
-    Metabase (Future)
+```
+Raw Data
+    |
+    v
+Bronze Layer
+    |
+    v
+Silver Layer
+    |
+    v
+Gold Layer
+    |
+    v
+ClickHouse
+    |
+    v
+Metabase Dashboard
+```
 
-## Technologies Used
+---
 
--   Python
--   PySpark
--   Apache Spark
--   Databricks
--   Delta Lake
--   SQL
--   GitHub
--   Metabase (planned)
+## Technologies
 
-## Dataset
+- Python
+- PySpark
+- Apache Spark
+- Databricks
+- Delta Lake
+- SQL
+- ClickHouse
+- Metabase
+- Docker
+- GitHub
 
-The project uses insurance datasets:
+---
 
--   Policies
--   Claims
--   Accident records
+## Data Domains
 
-Raw datasets are not included in this repository due to size
-limitations.
+The pipeline processes three main insurance domains:
 
-Dataset files should be placed under:
+- Claims
+- Accidents
+- Policies
 
-    data/raw/
+---
 
-Schema definitions are available under:
+## Medallion Layers
 
-    schemas/
+### Bronze Layer
 
-## Project Structure
-
-- `data/`
-  - `samples/`
-    - `mongodb/`
-      - `claims.json`: Sample insurance claims data from MongoDB.
-    - `mysql/`
-      - `policies.csv`: Sample insurance policies data from MySQL.
-    - `s3/`
-      - `external/`: Stores external input data.
-      - `tmp/`
-        - `claims.json`: Temporary claims data.
-  - `schemas/`
-    - `mongodb/`
-      - `claims.json`: MongoDB claims data schema.
-    - `s3/`
-      - `accidents.json`: S3 accident data schema.
-    - `sql/`
-      - `policies.json`: SQL policies data schema.
-
-- `notebooks/`
-  - `bronze.py`: Loads and processes raw data in the Bronze layer.
-  - `silver-codex2.py`: Cleans and transforms data in the Silver layer.
-  - `gold.py`: Creates curated business-ready data in the Gold layer.
-
-- `setup/`
-  - `mongodb/`
-    - `config.sh`: MongoDB configuration script.
-    - `Dockerfile`: Docker image configuration for MongoDB.
-  - `sql/`
-    - `databricks/`
-      - `destroy.sql`: Removes Databricks resources or tables.
-    - `mysql/`
-      - `config.sql`: MySQL configuration script.
-
-- `requirements.txt`: Contains the required Python dependencies.
-- `README.md`: Contains the project documentation.
-
-## Bronze Layer
-
-The Bronze layer stores raw ingested data.
-
-Operations:
-
--   Reading raw datasets
--   Preserving original structure
--   Adding ingestion timestamps
--   Creating Delta tables
+Raw ingestion layer that stores source data with minimal transformation.
 
 Tables:
 
-    bronze_claims
-    bronze_accidents
-    bronze_policies
+```
+bronze_claims
+bronze_accidents
+bronze_policies
+```
 
-## Silver Layer
+---
 
-The Silver layer performs data cleaning and standardization.
+### Silver Layer
+
+Cleaning and transformation layer.
 
 Operations:
 
--   Schema enforcement
--   Column renaming
--   Data type casting
--   Date parsing
--   Handling invalid values
+- Schema validation
+- Data type standardization
+- Data cleaning
+- Date parsing
 
 Tables:
 
-    silver_claims
-    silver_accidents
-    silver_policies
+```
+silver_claims
+silver_accidents
+silver_policies
+```
 
-## Gold Layer
+---
 
-The Gold layer creates business-ready analytical tables.
+### Gold Layer
+
+Business-ready analytical tables designed for BI reporting.
 
 ### Claims
 
-    gold_claims_daily
-    gold_claims_weekly
-    gold_claims_monthly
+```
+gold_claims_daily
+gold_claims_weekly
+gold_claims_monthly
+```
 
-Includes:
+Metrics:
 
--   Number of claims
--   Total claim amount
--   Rolling averages
--   Trend metrics
+- Number of claims
+- Total claim amount
+- Claim trends
+- Rolling averages
+- Growth metrics
+
 
 ### Accidents
 
-    gold_accidents_daily
-    gold_accidents_weekly
-    gold_accidents_monthly
+```
+gold_accidents_daily
+gold_accidents_weekly
+gold_accidents_monthly
+```
 
-Includes:
+Metrics:
 
--   Accident counts
--   Accident trends
--   Vehicle involvement statistics
--   Geographic analysis
+- Accident frequency
+- Accident trends
+- Time-based analysis
+- Geographic insights
+
 
 ### Policies
 
-    gold_policies_monthly
+```
+gold_policies_monthly
+```
 
-Includes:
+Metrics:
 
--   Policies issued
--   Policies expired
--   Exposure metrics
--   Vehicle age analysis
+- Policies issued
+- Policies expired
+- Exposure metrics
+- Vehicle age analysis
 
-## Data Quality
+---
 
-The pipeline applies data quality practices:
+# Metabase Dashboard
 
--   Schema validation
--   Data type consistency
--   Invalid date handling
--   Null investigation
--   Business rule checks
+The Gold layer is connected to Metabase for interactive analytics and visualization.
 
-## Future Improvements
+Dashboard sections:
 
-Planned improvements:
+## Executive Overview
 
--   Connect Gold tables to Metabase
--   Build interactive BI dashboards
--   Create KPI monitoring views
--   Add automated data quality checks
--   Schedule Databricks workflows
--   Add CI/CD integration
+- Total claims
+- Total claim amount
+- Total accidents
+- Total policies issued
+- Overall trends
 
-## Metabase Dashboard (Future)
 
-The Gold layer is designed for BI consumption.
+## Claims Analysis
 
-Planned dashboards:
+- Monthly claim trends
+- Claim amount analysis
+- Claim amount breakdown by type
+- Claim severity analysis
 
-### Claims Dashboard
 
--   Claim trends
--   Claim amounts
--   Average claim cost
+## Accident Analysis
 
-### Accident Dashboard
+- Monthly and weekly accident trends
+- Accident patterns
+- Location analysis
 
--   Accident frequency
--   High-risk locations
--   Accident trends
 
-### Policy Dashboard
+## Policy Analysis
 
--   Policy growth
--   Exposure trends
--   Expiration analysis
+- Policy growth trends
+- Exposure trends
+- Vehicle age analysis
+- Expiration trends
+
+
+Dashboard screenshots are available in:
+
+```
+images/
+```
+
+### Executive Overview
+
+![Executive Overview](images/executive_overview.png)
+
+### Claims Analysis
+
+![Claims Analysis](images/claims_analysis.png)
+
+### Accident Analysis
+
+![Accident Analysis](images/accident_analysis.png)
+
+### Policy Analysis
+
+![Policy Analysis](images/policy_analysis.png)
+
+---
+
+## Project Structure
+
+```
+insurance-data-engineering/
+
+├── notebooks/
+│   ├── bronze.py
+│   ├── silver.py
+│   └── gold.py
+│
+├── data/
+│
+├── setup/
+│
+├── images/
+│   ├── executive_overview.png
+│   ├── claims_analysis.png
+│   ├── accident_analysis.png
+│   └── policy_analysis.png
+│
+├── requirements.txt
+└── README.md
+```
+
+---
 
 ## How to Run
 
-1.  Clone the repository.
+1. Clone the repository.
 
-2.  Upload notebooks to Databricks.
+2. Upload notebooks to Databricks.
 
-3.  Configure dataset locations.
+3. Run the pipeline in order:
 
-4.  Run notebooks in order:
-
-```{=html}
-<!-- -->
 ```
-    01_bronze_layer
-            |
-            v
-    02_silver_layer
-            |
-            v
-    03_gold_layer
+Bronze Layer
+      |
+      v
+Silver Layer
+      |
+      v
+Gold Layer
+```
+
+4. Load Gold tables into ClickHouse.
+
+5. Connect ClickHouse to Metabase for dashboard visualization.
+
+---
 
 ## Author
 
 Yasna Kazemghamsari
 
-Data Engineering \| PySpark \| Databricks \| Data Analytics
+Data Engineering | PySpark | Databricks | Data Analytics
