@@ -17,6 +17,14 @@ notebook had grown some copy/paste debris from iterative editing):
   column, which referenced a ``number_of_vehicles_involved`` field that
   doesn't exist anywhere in the accidents schema (it's a claims/collision
   field); that's almost certainly *why* the block got discarded originally.
+- ``most_common_borough``/``most_common_zip_code`` were computed with
+  ``F.max()``, which is the alphabetically/numerically largest value, not
+  the most frequent one — a borough that appears once could "win" over one
+  that appears 500 times just by sorting later. ``_modes_per_group()`` does
+  an actual per-group frequency count instead.
+- ``build_monthly_policies`` joined issued/expired policies with a left
+  join, which would silently drop any month that only had expirations and
+  no new issuances. Now a full outer join.
 """
 
 from __future__ import annotations
@@ -40,6 +48,40 @@ def _pct_change(count_col: str, window: Window) -> F.Column:
     current = F.col(count_col)
     previous = F.lag(count_col).over(window)
     return F.round(((current - previous) / previous) * 100, 2)
+
+
+def _modes_per_group(df: DataFrame, group_col: str, value_cols: list[str]) -> DataFrame:
+    """One row per ``group_col`` value, with each of ``value_cols`` replaced by
+    its most frequent non-null (mode) value within that group.
+
+    ``F.max()`` on a raw column (the original approach) returns the
+    alphabetically/numerically largest value, not the most common one —
+    e.g. a borough that appears once would beat one that appears 500 times
+    if its name happens to sort later. This does an actual per-group,
+    per-column frequency count and picks the top row via a window function,
+    which is the standard "mode per group" pattern in Spark (there's no
+    built-in mode aggregate).
+
+    Null values are excluded from the count before ranking: on the real
+    accident data, rows with a missing borough outnumber any single named
+    borough in about half the months, so an unfiltered mode would mostly
+    report "the most common value is missing" — technically the true mode,
+    but useless as a "where do accidents happen" signal. A group whose rows
+    are *all* null for a column still ends up with a null
+    ``most_common_<column>`` (nothing to report), which is correct.
+    """
+    result = df.select(group_col).distinct()
+    for value_col in value_cols:
+        counts = df.filter(F.col(value_col).isNotNull()).groupBy(group_col, value_col).count()
+        ranked = counts.withColumn(
+            "_rank",
+            F.row_number().over(Window.partitionBy(group_col).orderBy(F.desc("count"))),
+        )
+        mode_per_group = ranked.filter(F.col("_rank") == 1).select(
+            group_col, F.col(value_col).alias(f"most_common_{value_col}")
+        )
+        result = result.join(mode_per_group, on=group_col, how="left")
+    return result
 
 
 # --- Claims ---------------------------------------------------------------
@@ -118,8 +160,11 @@ def build_daily_accidents(silver_accidents: DataFrame) -> DataFrame:
     daily = silver_accidents.groupBy("accident_date").agg(
         F.count("*").alias("number_of_accidents"),
         F.round(F.avg("accident_hour")).alias("average_accident_hour"),
-        F.max("borough").alias("most_common_borough"),
-        F.max("zip_code").alias("most_common_zip_code"),
+    )
+    daily = daily.join(
+        _modes_per_group(silver_accidents, "accident_date", ["borough", "zip_code"]),
+        on="accident_date",
+        how="left",
     )
 
     w = Window.orderBy("accident_date")
@@ -132,15 +177,16 @@ def build_daily_accidents(silver_accidents: DataFrame) -> DataFrame:
 
 
 def build_weekly_accidents(silver_accidents: DataFrame) -> DataFrame:
-    weekly = (
-        silver_accidents.withColumn("accident_year_week", _year_week("accident_date"))
-        .groupBy("accident_year_week")
-        .agg(
-            F.count("*").alias("number_of_accidents"),
-            F.round(F.avg("accident_hour")).alias("average_accident_hour"),
-            F.max("borough").alias("most_common_borough"),
-            F.max("zip_code").alias("most_common_zip_code"),
-        )
+    accidents_with_week = silver_accidents.withColumn("accident_year_week", _year_week("accident_date"))
+
+    weekly = accidents_with_week.groupBy("accident_year_week").agg(
+        F.count("*").alias("number_of_accidents"),
+        F.round(F.avg("accident_hour")).alias("average_accident_hour"),
+    )
+    weekly = weekly.join(
+        _modes_per_group(accidents_with_week, "accident_year_week", ["borough", "zip_code"]),
+        on="accident_year_week",
+        how="left",
     )
 
     w = Window.orderBy("accident_year_week")
@@ -153,15 +199,16 @@ def build_weekly_accidents(silver_accidents: DataFrame) -> DataFrame:
 
 
 def build_monthly_accidents(silver_accidents: DataFrame) -> DataFrame:
-    monthly = (
-        silver_accidents.withColumn("accident_year_month", _year_month("accident_date"))
-        .groupBy("accident_year_month")
-        .agg(
-            F.count("*").alias("number_of_accidents"),
-            F.round(F.avg("accident_hour")).alias("average_accident_hour"),
-            F.max("borough").alias("most_common_borough"),
-            F.max("zip_code").alias("most_common_zip_code"),
-        )
+    accidents_with_month = silver_accidents.withColumn("accident_year_month", _year_month("accident_date"))
+
+    monthly = accidents_with_month.groupBy("accident_year_month").agg(
+        F.count("*").alias("number_of_accidents"),
+        F.round(F.avg("accident_hour")).alias("average_accident_hour"),
+    )
+    monthly = monthly.join(
+        _modes_per_group(accidents_with_month, "accident_year_month", ["borough", "zip_code"]),
+        on="accident_year_month",
+        how="left",
     )
 
     w = Window.orderBy("accident_year_month")
@@ -194,8 +241,12 @@ def build_monthly_policies(silver_policies: DataFrame) -> DataFrame:
         .agg(F.count("*").alias("policies_expired"))
     )
 
+    # A left join would silently drop any month that only has expirations
+    # and no new issuances (e.g. trailing months near the end of the sample
+    # data, once issuances have tapered off but 1-year-old policies are
+    # still expiring) — a full outer join keeps every month either side has.
     return (
-        issued_policies.join(expired_policies, on="year_month", how="left")
+        issued_policies.join(expired_policies, on="year_month", how="full")
         .fillna(0, ["policies_issued", "policies_expired"])
         .orderBy("year_month")
     )
