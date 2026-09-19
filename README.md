@@ -105,6 +105,8 @@ silver_policies
 
 Between Silver and Gold, `insurance_pipeline.quality` runs a Great Expectations suite against each Silver table (required fields not null, values within valid ranges, e.g. `incident_hour` between 0–24, non-negative claim amounts, valid latitude/longitude). A failed expectation raises `DataQualityError`, which fails the pipeline (the Airflow `data_quality_checks` task) instead of letting bad data flow silently into Gold.
 
+The raw sample data has real invalid rows — negative premiums, GPS coordinates outside valid Earth latitude/longitude — that aren't null, so they'd sail straight through a null-check. The Silver transforms filter these out directly (defense in depth), with the Great Expectations suite as a second, independent check that the filtering actually worked.
+
 ---
 
 ## Gold Layer
@@ -183,51 +185,55 @@ Each task shells out to a dedicated Python virtualenv baked into the Airflow ima
 
 The Gold layer is loaded into ClickHouse (via `insurance_pipeline.clickhouse_loader`, run as the final DAG task) and visualized through Metabase dashboards.
 
-The dashboard provides interactive analytics across claims, accidents, and policies.
+The SQL behind every card on every dashboard below lives in `metabase_queries/` — one `.sql` file per card, grouped into one folder per dashboard, ready to paste into Metabase's SQL editor. See `metabase_queries/README.md` for how to wire them up. Every query only touches columns that actually exist on the Gold tables (`docker/clickhouse/init.sql` has the exact schema) — nothing here is a plausible-looking panel built on data that isn't there.
 
 ## Executive Overview
 
-Includes:
+5 cards, from `metabase_queries/01_executive_overview/`:
 
-- Total claims
-- Total claim amount
-- Total accidents
-- Total policies issued
-- Overall business trends
+- Total claims and total claim amount (all-time)
+- Total accidents (all-time)
+- Total policies issued (all-time)
+- Overall business trend: claims, accidents, and policies issued on one monthly timeline
+- Average claim severity (dollars per claim)
 
 ---
 
 ## Claims Analysis
 
-Includes:
+5 cards, from `metabase_queries/02_claims_analysis/`:
 
-- Monthly claim trends
-- Claim amount analysis
-- Claim amount breakdown by type
-- Claim severity analysis
-- Driver age trends
+- Monthly claim volume and month-over-month growth
+- Claim amount breakdown by type (injury / property / vehicle) per month
+- Weekly claim volume and growth (finer-grained than monthly)
+- Average claimant driver age and incident hour, over time
+- Daily claim amount with a 30-day rolling average overlaid
 
 ---
 
 ## Accident Analysis
 
-Includes:
+5 cards, from `metabase_queries/03_accident_analysis/`:
 
-- Monthly accident trends
-- Weekly accident trends
-- Accident patterns
-- Location analysis
+- Monthly accident volume and month-over-month growth
+- Weekly accident volume (finer-grained than monthly)
+- Most accident-prone borough/zip code each month (a true mode — see below)
+- Ranking of which borough has been the monthly hotspot most often
+- Daily accident count with a 30-day rolling average overlaid
+
+The `most_common_borough`/`most_common_zip_code` columns are a real per-period mode (the value that actually occurs most often), not just the alphabetically-largest value — an early version of `gold.py` used `MAX()` for this, which is a different (and wrong) thing; see `insurance_pipeline.gold._modes_per_group`.
 
 ---
 
 ## Policy Analysis
 
-Includes:
+5 cards, from `metabase_queries/04_policy_analysis/`:
 
-- Policy growth trends
-- Exposure trends
-- Vehicle age analysis
-- Policy expiration trends
+- Policy growth trend (new policies issued per month)
+- Exposure trend (total sum-insured written per month)
+- Vehicle age trend (average age of insured vehicle at issuance)
+- Policies issued vs. expired per month (growth vs. churn)
+- Estimated active policy count over time (cumulative issued − cumulative expired)
 
 ---
 
@@ -287,6 +293,8 @@ insurance-data-engineering/
 │   └── clickhouse/init.sql
 │
 ├── tests/                      # pytest, against a local SparkSession
+│
+├── metabase_queries/            # One .sql file per Metabase dashboard card, grouped by dashboard
 │
 ├── data/
 │   ├── samples/                # Sample MySQL/MongoDB/S3 source data
