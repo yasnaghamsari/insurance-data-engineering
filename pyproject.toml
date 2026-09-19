@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "insurance-pipeline"
+version = "0.1.0"
+description = "Bronze/Silver/Gold insurance data pipeline (Databricks + local Spark)"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "pyspark==3.5.3",
+    "delta-spark==3.2.0",
+    "great_expectations==1.23.1",
+    "clickhouse-connect==0.8.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.3",
+    "ruff==0.7.4",
+    "black==24.10.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 110
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+# Databricks notebooks rely on runtime-injected globals (spark, dbutils,
+# display) that don't exist as real Python names, so they're not linted here.
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

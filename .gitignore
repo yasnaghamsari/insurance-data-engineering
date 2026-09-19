@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local Spark/Delta/Hive artifacts
+warehouse/
+spark-warehouse/
+metastore_db/
+derby.log
+
+# Downloaded local tooling (portable JDK, etc.)
+.tools/
+
+# Secrets / local env
+.env
+
+# Airflow
+logs/
+*.pid
+
+# Editor/OS
+.vscode/
+.DS_Store
+Thumbs.db
