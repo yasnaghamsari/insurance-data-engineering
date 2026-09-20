@@ -21,6 +21,9 @@ GOLD_TABLES = [
     "gold_accidents_weekly",
     "gold_accidents_monthly",
     "gold_policies_monthly",
+    "gold_loss_ratio_monthly",
+    "gold_vehicle_body_risk",
+    "gold_vehicle_usage_risk",
 ]
 
 

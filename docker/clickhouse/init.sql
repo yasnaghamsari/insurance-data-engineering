@@ -77,6 +77,39 @@ CREATE TABLE IF NOT EXISTS insurance.gold_policies_monthly (
     year_month String,
     policies_issued Int64,
     exposure Nullable(Float64),
+    total_premium Float64,
     avg_issue_age_of_vehicle Nullable(Float64),
     policies_expired Int64
 ) ENGINE = MergeTree ORDER BY year_month;
+
+CREATE TABLE IF NOT EXISTS insurance.gold_loss_ratio_monthly (
+    year_month String,
+    total_claim_amount Float64,
+    total_premium Float64,
+    loss_ratio_pct Nullable(Float64),
+    `3m_rolling_avg_loss_ratio_pct` Nullable(Float64)
+) ENGINE = MergeTree ORDER BY year_month;
+
+CREATE TABLE IF NOT EXISTS insurance.gold_vehicle_body_risk (
+    vehicle_body String,
+    number_of_policies Int64,
+    total_premium Float64,
+    exposure Float64,
+    number_of_claims Int64,
+    total_claim_amount Float64,
+    avg_claim_severity Nullable(Float64),
+    claims_per_100_policies Float64,
+    loss_ratio_pct Nullable(Float64)
+) ENGINE = MergeTree ORDER BY vehicle_body;
+
+CREATE TABLE IF NOT EXISTS insurance.gold_vehicle_usage_risk (
+    vehicle_usage String,
+    number_of_policies Int64,
+    total_premium Float64,
+    exposure Float64,
+    number_of_claims Int64,
+    total_claim_amount Float64,
+    avg_claim_severity Nullable(Float64),
+    claims_per_100_policies Float64,
+    loss_ratio_pct Nullable(Float64)
+) ENGINE = MergeTree ORDER BY vehicle_usage;

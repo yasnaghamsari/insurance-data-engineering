@@ -25,6 +25,12 @@ notebook had grown some copy/paste debris from iterative editing):
 - ``build_monthly_policies`` joined issued/expired policies with a left
   join, which would silently drop any month that only had expirations and
   no new issuances. Now a full outer join.
+
+``gold_loss_ratio_monthly``, ``gold_vehicle_body_risk``, and
+``gold_vehicle_usage_risk`` are new tables, not a port from the original
+notebook: nothing previously joined claims to policies, so there was no real
+loss ratio (incurred claims / earned premium) anywhere, and no way to
+attribute a claim to the vehicle it was written against.
 """
 
 from __future__ import annotations
@@ -231,6 +237,7 @@ def build_monthly_policies(silver_policies: DataFrame) -> DataFrame:
         .agg(
             F.count("*").alias("policies_issued"),
             F.round(F.sum("sum_insured")).alias("exposure"),
+            F.round(F.sum("premium")).alias("total_premium"),
             F.round(F.avg("issue_age_of_vehicle")).alias("avg_issue_age_of_vehicle"),
         )
     )
@@ -247,9 +254,109 @@ def build_monthly_policies(silver_policies: DataFrame) -> DataFrame:
     # still expiring) — a full outer join keeps every month either side has.
     return (
         issued_policies.join(expired_policies, on="year_month", how="full")
-        .fillna(0, ["policies_issued", "policies_expired"])
+        .fillna(0, ["policies_issued", "policies_expired", "total_premium"])
         .orderBy("year_month")
     )
+
+
+# --- Loss ratio and vehicle segment risk -------------------------------------
+#
+# Neither of these existed before: every Gold table up to this point
+# aggregates claims or policies independently over time, so there was no
+# actual loss ratio (incurred claims / earned premium) anywhere, and no way
+# to attribute a claim to the vehicle it was written against (vehicle
+# attributes like body type live on the policy record, not the claim).
+#
+# Loss ratio is computed at the month level from the two existing monthly
+# aggregates (claims attributed to the month of the *incident*, premium
+# attributed to the month of *issuance*) rather than from a row-level
+# claims-to-policies join — that avoids double-counting a policy's premium
+# once per claim when a policy has more than one claim in the same month.
+# Vehicle segment risk needs the row-level join instead, since claim
+# frequency/severity has to be attributed to a per-policy attribute that
+# isn't a simple monthly total.
+
+
+def build_monthly_loss_ratio(gold_claims_monthly: DataFrame, gold_policies_monthly: DataFrame) -> DataFrame:
+    claims_by_month = gold_claims_monthly.select(
+        F.col("claim_year_month").alias("year_month"), "total_claim_amount"
+    )
+    premium_by_month = gold_policies_monthly.select("year_month", "total_premium")
+
+    loss_ratio = (
+        claims_by_month.join(premium_by_month, on="year_month", how="full")
+        .fillna(0, ["total_claim_amount", "total_premium"])
+        .withColumn(
+            "loss_ratio_pct",
+            F.when(
+                F.col("total_premium") > 0,
+                F.round((F.col("total_claim_amount") / F.col("total_premium")) * 100, 2),
+            ),
+        )
+    )
+
+    w = Window.orderBy("year_month")
+    return loss_ratio.withColumn(
+        "3m_rolling_avg_loss_ratio_pct",
+        F.round(F.avg("loss_ratio_pct").over(w.rowsBetween(-2, 0)), 2),
+    ).orderBy("year_month")
+
+
+def _segment_risk(silver_claims: DataFrame, silver_policies: DataFrame, group_col: str) -> DataFrame:
+    """One row per distinct, non-blank value of ``group_col`` (a column on
+    ``silver_policies``, e.g. vehicle body type or usage), with policy count,
+    premium, exposure, claim count/severity, claim frequency, and loss ratio
+    for that segment.
+
+    Blank-string values (present in the raw feed but not caught by Silver's
+    null-only filtering) are excluded rather than lumped into an "Unknown"
+    bucket, since they're a small share of rows and would otherwise dominate
+    a chart sorted by claim count without being an actual segment.
+    """
+    policies = silver_policies.filter(F.col(group_col).isNotNull() & (F.col(group_col) != ""))
+
+    policy_stats = policies.groupBy(group_col).agg(
+        F.count("*").alias("number_of_policies"),
+        F.round(F.sum("premium")).alias("total_premium"),
+        F.round(F.sum("sum_insured")).alias("exposure"),
+    )
+
+    claim_stats = (
+        silver_claims.join(policies.select("policy_number", group_col), on="policy_number", how="inner")
+        .groupBy(group_col)
+        .agg(
+            F.count("*").alias("number_of_claims"),
+            F.round(F.sum("total_claim_amount")).alias("total_claim_amount"),
+            F.round(F.avg("total_claim_amount")).alias("avg_claim_severity"),
+        )
+    )
+
+    combined = policy_stats.join(claim_stats, on=group_col, how="left").fillna(
+        0, ["number_of_claims", "total_claim_amount"]
+    )
+
+    return combined.withColumn(
+        "claims_per_100_policies",
+        F.round((F.col("number_of_claims") / F.col("number_of_policies")) * 100, 2),
+    ).withColumn(
+        "loss_ratio_pct",
+        F.when(
+            F.col("total_premium") > 0,
+            F.round((F.col("total_claim_amount") / F.col("total_premium")) * 100, 2),
+        ),
+    )
+
+
+def build_vehicle_body_risk(silver_claims: DataFrame, silver_policies: DataFrame) -> DataFrame:
+    return (
+        _segment_risk(silver_claims, silver_policies, "body")
+        .withColumnRenamed("body", "vehicle_body")
+        .orderBy(F.desc("total_premium"))
+    )
+
+
+def build_vehicle_usage_risk(silver_claims: DataFrame, silver_policies: DataFrame) -> DataFrame:
+    return _segment_risk(silver_claims, silver_policies, "vehicle_usage").orderBy(F.desc("total_premium"))
 
 
 def _write(df: DataFrame, table_name: str) -> None:
@@ -262,7 +369,8 @@ def run_gold(spark: SparkSession, cfg: PipelineConfig) -> None:
     silver_claims = spark.table("silver_claims")
     _write(build_daily_claims(silver_claims), "gold_claims_daily")
     _write(build_weekly_claims(silver_claims), "gold_claims_weekly")
-    _write(build_monthly_claims(silver_claims), "gold_claims_monthly")
+    monthly_claims = build_monthly_claims(silver_claims)
+    _write(monthly_claims, "gold_claims_monthly")
 
     silver_accidents = spark.table("silver_accidents")
     _write(build_daily_accidents(silver_accidents), "gold_accidents_daily")
@@ -270,4 +378,9 @@ def run_gold(spark: SparkSession, cfg: PipelineConfig) -> None:
     _write(build_monthly_accidents(silver_accidents), "gold_accidents_monthly")
 
     silver_policies = spark.table("silver_policies")
-    _write(build_monthly_policies(silver_policies), "gold_policies_monthly")
+    monthly_policies = build_monthly_policies(silver_policies)
+    _write(monthly_policies, "gold_policies_monthly")
+
+    _write(build_monthly_loss_ratio(monthly_claims, monthly_policies), "gold_loss_ratio_monthly")
+    _write(build_vehicle_body_risk(silver_claims, silver_policies), "gold_vehicle_body_risk")
+    _write(build_vehicle_usage_risk(silver_claims, silver_policies), "gold_vehicle_usage_risk")
