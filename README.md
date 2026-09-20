@@ -165,7 +165,37 @@ Includes:
 - Policies issued
 - Policies expired
 - Exposure metrics
+- Total premium written
 - Vehicle age analysis
+
+---
+
+### Loss Ratio & Vehicle Risk Analytics
+
+Tables:
+
+```
+gold_loss_ratio_monthly
+gold_vehicle_body_risk
+gold_vehicle_usage_risk
+```
+
+These three are the only Gold tables that actually join Claims and Policies
+(everything above aggregates one domain over time, independently of the
+other) — loss ratio and per-vehicle-segment risk both require attributing a
+claim back to the policy, and the vehicle, it was filed against. See the
+module docstring in `insurance_pipeline.gold` for how the join is structured
+(month-level for loss ratio, row-level for vehicle segments, to avoid
+double-counting a policy's premium across multiple claims in the same
+month).
+
+Includes:
+
+- Monthly loss ratio (incurred claims ÷ written premium), with a 3-month
+  rolling average
+- Claim frequency, severity, and loss ratio by vehicle body type
+- Claim frequency, severity, and loss ratio by vehicle usage (private vs.
+  commercial)
 
 ---
 
@@ -237,6 +267,25 @@ The `most_common_borough`/`most_common_zip_code` columns are a real per-period m
 
 ---
 
+## Vehicle & Loss Ratio Risk
+
+6 cards, from `metabase_queries/05_vehicle_and_loss_ratio_risk/`:
+
+- Overall portfolio loss ratio (all-time)
+- Riskiest vehicle body type (highest loss ratio among segments with enough
+  policies to be meaningful)
+- Monthly loss ratio trend, with a 3-month rolling average
+- Loss ratio by vehicle body type
+- Claim frequency (claims per 100 policies) by vehicle body type
+- Private vs. commercial risk comparison
+
+Unlike the other four dashboards, this one is built from a real
+claims-to-policies join rather than independent time-series aggregates —
+see [Loss Ratio & Vehicle Risk Analytics](#loss-ratio--vehicle-risk-analytics)
+above.
+
+---
+
 ## Dashboard Screenshots
 
 Screenshots are available in:
@@ -260,6 +309,10 @@ images/
 ### Policy Analysis
 
 ![Policy Analysis](images/policy_analysis.png)
+
+### Vehicle & Loss Ratio Risk
+
+![Vehicle & Loss Ratio Risk](images/vehicle_loss_ratio_risk.png)
 
 ---
 

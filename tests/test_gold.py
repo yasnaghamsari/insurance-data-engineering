@@ -1,6 +1,11 @@
 from pyspark.sql import Row
 
-from insurance_pipeline.gold import build_daily_accidents, build_daily_claims
+from insurance_pipeline.gold import (
+    build_daily_accidents,
+    build_daily_claims,
+    build_monthly_loss_ratio,
+    build_vehicle_body_risk,
+)
 
 GOLD_TABLE_NAMES = [
     "gold_claims_daily",
@@ -10,6 +15,9 @@ GOLD_TABLE_NAMES = [
     "gold_accidents_weekly",
     "gold_accidents_monthly",
     "gold_policies_monthly",
+    "gold_loss_ratio_monthly",
+    "gold_vehicle_body_risk",
+    "gold_vehicle_usage_risk",
 ]
 
 
@@ -75,6 +83,62 @@ def test_build_daily_accidents_picks_most_frequent_borough_not_max(spark):
     assert result["number_of_accidents"] == 3
     assert result["most_common_borough"] == "Bronx"
     assert result["most_common_zip_code"] == 10451
+
+
+def test_build_monthly_loss_ratio_divides_claims_by_premium(spark):
+    claims_monthly = spark.createDataFrame(
+        [
+            Row(claim_year_month="2024-01", total_claim_amount=100.0),
+            Row(claim_year_month="2024-02", total_claim_amount=50.0),
+        ]
+    )
+    policies_monthly = spark.createDataFrame(
+        [
+            Row(year_month="2024-01", total_premium=1000.0),
+            # No premium written this month (e.g. issuances had already
+            # tapered off) — loss_ratio_pct must be null, not a division
+            # error, since there's nothing to divide by.
+            Row(year_month="2024-02", total_premium=0.0),
+        ]
+    )
+
+    result = {r["year_month"]: r for r in build_monthly_loss_ratio(claims_monthly, policies_monthly).collect()}
+
+    assert result["2024-01"]["loss_ratio_pct"] == 10.0
+    assert result["2024-02"]["loss_ratio_pct"] is None
+
+
+def test_build_vehicle_body_risk_attributes_claims_via_policy_join(spark):
+    # Claims carry no vehicle attributes of their own (body type lives on
+    # the policy record), so this has to join back through policy_number
+    # rather than reading a column that exists directly on either table.
+    silver_policies = spark.createDataFrame(
+        [
+            Row(policy_number="P1", body="SUV", premium=100.0, sum_insured=1000.0),
+            Row(policy_number="P2", body="SUV", premium=100.0, sum_insured=1000.0),
+            Row(policy_number="P3", body="SALOON", premium=200.0, sum_insured=2000.0),
+            # Blank body (present in the raw feed) must be excluded, not
+            # counted as its own "" segment.
+            Row(policy_number="P4", body="", premium=50.0, sum_insured=500.0),
+        ]
+    )
+    silver_claims = spark.createDataFrame(
+        [
+            Row(policy_number="P1", total_claim_amount=50.0),
+        ]
+    )
+
+    result = {
+        r["vehicle_body"]: r for r in build_vehicle_body_risk(silver_claims, silver_policies).collect()
+    }
+
+    assert set(result.keys()) == {"SUV", "SALOON"}
+    assert result["SUV"]["number_of_policies"] == 2
+    assert result["SUV"]["number_of_claims"] == 1
+    assert result["SUV"]["claims_per_100_policies"] == 50.0
+    assert result["SUV"]["loss_ratio_pct"] == 25.0
+    assert result["SALOON"]["number_of_claims"] == 0
+    assert result["SALOON"]["loss_ratio_pct"] == 0.0
 
 
 def test_build_daily_accidents_excludes_nulls_from_the_mode(spark):
