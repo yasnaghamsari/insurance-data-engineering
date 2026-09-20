@@ -102,7 +102,8 @@ def test_build_monthly_loss_ratio_divides_claims_by_premium(spark):
         ]
     )
 
-    result = {r["year_month"]: r for r in build_monthly_loss_ratio(claims_monthly, policies_monthly).collect()}
+    rows = build_monthly_loss_ratio(claims_monthly, policies_monthly).collect()
+    result = {r["year_month"]: r for r in rows}
 
     assert result["2024-01"]["loss_ratio_pct"] == 10.0
     assert result["2024-02"]["loss_ratio_pct"] is None
@@ -128,9 +129,7 @@ def test_build_vehicle_body_risk_attributes_claims_via_policy_join(spark):
         ]
     )
 
-    result = {
-        r["vehicle_body"]: r for r in build_vehicle_body_risk(silver_claims, silver_policies).collect()
-    }
+    result = {r["vehicle_body"]: r for r in build_vehicle_body_risk(silver_claims, silver_policies).collect()}
 
     assert set(result.keys()) == {"SUV", "SALOON"}
     assert result["SUV"]["number_of_policies"] == 2
