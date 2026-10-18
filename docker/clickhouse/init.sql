@@ -120,3 +120,36 @@ CREATE TABLE IF NOT EXISTS insurance.gold_vehicle_usage_risk (
     claims_per_100_policies Float64,
     loss_ratio_pct Nullable(Float64)
 ) ENGINE = MergeTree ORDER BY vehicle_usage;
+
+-- Accidents per ~110 m grid cell (lat/lon rounded to 3 decimals), NYC area only.
+CREATE TABLE IF NOT EXISTS insurance.gold_accident_grid (
+    latitude Float64,
+    longitude Float64,
+    number_of_accidents Int64,
+    number_of_persons_injured Int64
+) ENGINE = MergeTree ORDER BY (latitude, longitude);
+
+-- Full 7 x 24 matrix, weekday_number 1 = Monday, zero-filled.
+CREATE TABLE IF NOT EXISTS insurance.gold_accidents_weekday_hour (
+    weekday_number Int32,
+    weekday String,
+    accident_hour Int32,
+    number_of_accidents Int64
+) ENGINE = MergeTree ORDER BY (weekday_number, accident_hour);
+
+-- borough is NULL for accidents with no recorded borough (kept, not dropped).
+CREATE TABLE IF NOT EXISTS insurance.gold_accidents_borough_monthly (
+    accident_year_month String,
+    borough Nullable(String),
+    number_of_accidents Int64
+) ENGINE = MergeTree ORDER BY accident_year_month;
+
+-- Contributions (percentage points) add up to the portfolio loss ratio - 100.
+CREATE TABLE IF NOT EXISTS insurance.gold_loss_ratio_contribution (
+    vehicle_body String,
+    number_of_policies Int64,
+    total_premium Float64,
+    total_claim_amount Float64,
+    contribution_pct_points Float64,
+    loss_ratio_pct Nullable(Float64)
+) ENGINE = MergeTree ORDER BY vehicle_body;

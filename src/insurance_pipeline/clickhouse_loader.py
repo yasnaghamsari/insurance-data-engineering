@@ -20,10 +20,14 @@ GOLD_TABLES = [
     "gold_accidents_daily",
     "gold_accidents_weekly",
     "gold_accidents_monthly",
+    "gold_accident_grid",
+    "gold_accidents_weekday_hour",
+    "gold_accidents_borough_monthly",
     "gold_policies_monthly",
     "gold_loss_ratio_monthly",
     "gold_vehicle_body_risk",
     "gold_vehicle_usage_risk",
+    "gold_loss_ratio_contribution",
 ]
 
 

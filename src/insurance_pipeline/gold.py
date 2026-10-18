@@ -239,6 +239,61 @@ def build_monthly_accidents(silver_accidents: DataFrame) -> DataFrame:
     )
 
 
+# NYC's five boroughs fit inside this box. On the sample data it drops 1,264
+# of 1.4M accidents: 1,226 geocoded to (0, 0) and a handful far outside NYC.
+NYC_LATITUDE = (40.49, 40.92)
+NYC_LONGITUDE = (-74.27, -73.68)
+WEEKDAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def build_accident_grid(silver_accidents: DataFrame, decimals: int = 3) -> DataFrame:
+    """Accident counts per lat/lon grid cell (coordinates rounded to ``decimals``,
+    ~110 m at 3), NYC area only — a map-ready density table instead of 1.4M raw points."""
+    in_nyc = silver_accidents.filter(
+        F.col("latitude").between(*NYC_LATITUDE) & F.col("longitude").between(*NYC_LONGITUDE)
+    )
+    return in_nyc.groupBy(
+        F.round("latitude", decimals).alias("latitude"),
+        F.round("longitude", decimals).alias("longitude"),
+    ).agg(
+        F.count("*").alias("number_of_accidents"),
+        F.sum(F.coalesce(F.col("number_of_persons_injured"), F.lit(0))).alias("number_of_persons_injured"),
+    )
+
+
+def build_accidents_by_weekday_hour(silver_accidents: DataFrame) -> DataFrame:
+    """Full 7 x 24 matrix of accident counts by ISO weekday (1 = Monday) and hour,
+    with explicit zeros, so a heatmap never has holes. Rows without an hour are left out."""
+    spark = silver_accidents.sparkSession
+    # dayofweek() is 1 = Sunday .. 7 = Saturday; shift to ISO 1 = Monday .. 7 = Sunday.
+    counts = (
+        silver_accidents.filter(F.col("accident_hour").isNotNull())
+        .withColumn("weekday_number", ((F.dayofweek("accident_date") + 5) % 7) + 1)
+        .groupBy("weekday_number", "accident_hour")
+        .agg(F.count("*").alias("number_of_accidents"))
+    )
+    grid = spark.createDataFrame(
+        [(i + 1, name, hour) for i, name in enumerate(WEEKDAY_NAMES) for hour in range(24)],
+        "weekday_number int, weekday string, accident_hour int",
+    )
+    return (
+        grid.join(counts, on=["weekday_number", "accident_hour"], how="left")
+        .fillna(0, ["number_of_accidents"])
+        .select("weekday_number", "weekday", "accident_hour", "number_of_accidents")
+    )
+
+
+def build_monthly_accidents_by_borough(silver_accidents: DataFrame) -> DataFrame:
+    """Monthly accidents per borough. Accidents with no borough keep a null
+    ``borough`` row per month (22% of the sample, rising sharply after 2016),
+    so dashboards can report them separately instead of losing them."""
+    return (
+        silver_accidents.withColumn("accident_year_month", _year_month("accident_date"))
+        .groupBy("accident_year_month", "borough")
+        .agg(F.count("*").alias("number_of_accidents"))
+    )
+
+
 # --- Policies ----------------------------------------------------------------
 
 
@@ -417,6 +472,55 @@ def build_vehicle_usage_risk(silver_claims: DataFrame, silver_policies: DataFram
     return _segment_risk(silver_claims, silver_policies, "vehicle_usage").orderBy(F.desc("total_premium"))
 
 
+OTHER_BODY = "Other (< 20 policies)"
+UNKNOWN_BODY = "Unknown body"
+
+
+def build_loss_ratio_contribution(
+    silver_claims: DataFrame, silver_policies: DataFrame, min_policies: int = 20
+) -> DataFrame:
+    """How far each vehicle body pushes the portfolio loss ratio above or below 100%.
+
+    ``contribution_pct_points`` = (body's claims - body's premium) / *portfolio*
+    premium * 100, so the contributions of all rows add up exactly to the
+    portfolio loss ratio minus 100 — the waterfall's total. Same basis as
+    every other loss ratio here (claims on Silver policies / written
+    premium). Unlike ``gold_vehicle_body_risk``, nothing is excluded: blank
+    bodies become ``Unknown body`` and bodies under ``min_policies`` are
+    pooled into one ``Other`` row, so the total still reconciles.
+    """
+    body = F.when(F.trim(F.coalesce(F.col("body"), F.lit(""))) == "", F.lit(UNKNOWN_BODY)).otherwise(
+        F.col("body")
+    )
+    policies = silver_policies.withColumn("raw_body", body)
+    sizes = policies.groupBy("raw_body").agg(F.count("*").alias("_n"))
+    policies = (
+        policies.join(sizes, on="raw_body")
+        .withColumn(
+            "vehicle_body",
+            F.when(
+                (F.col("_n") < min_policies) & (F.col("raw_body") != UNKNOWN_BODY), F.lit(OTHER_BODY)
+            ).otherwise(F.col("raw_body")),
+        )
+        .select("policy_number", "vehicle_body", "premium")
+    )
+
+    premium = policies.groupBy("vehicle_body").agg(
+        F.count("*").alias("number_of_policies"), F.sum("premium").alias("total_premium")
+    )
+    claims = (
+        _claims_on_silver_policies(silver_claims, policies, ["vehicle_body"])
+        .groupBy("vehicle_body")
+        .agg(F.sum("total_claim_amount").alias("total_claim_amount"))
+    )
+    combined = premium.join(claims, on="vehicle_body", how="left").fillna(0, ["total_claim_amount"])
+    portfolio_premium = F.sum("total_premium").over(Window.partitionBy())
+    return combined.withColumn(
+        "contribution_pct_points",
+        F.round((F.col("total_claim_amount") - F.col("total_premium")) / portfolio_premium * 100, 4),
+    ).withColumn("loss_ratio_pct", _loss_ratio_pct("total_claim_amount", "total_premium"))
+
+
 def _write(df: DataFrame, table_name: str) -> None:
     df.write.format("delta").mode("overwrite").option("overwriteSchema", True).saveAsTable(table_name)
 
@@ -433,6 +537,9 @@ def run_gold(spark: SparkSession, cfg: PipelineConfig) -> None:
     _write(build_daily_accidents(silver_accidents), "gold_accidents_daily")
     _write(build_weekly_accidents(silver_accidents), "gold_accidents_weekly")
     _write(build_monthly_accidents(silver_accidents), "gold_accidents_monthly")
+    _write(build_accident_grid(silver_accidents), "gold_accident_grid")
+    _write(build_accidents_by_weekday_hour(silver_accidents), "gold_accidents_weekday_hour")
+    _write(build_monthly_accidents_by_borough(silver_accidents), "gold_accidents_borough_monthly")
 
     silver_policies = spark.table("silver_policies")
     monthly_policies = build_monthly_policies(silver_policies)
@@ -453,3 +560,4 @@ def run_gold(spark: SparkSession, cfg: PipelineConfig) -> None:
     )
     _write(build_vehicle_body_risk(silver_claims, silver_policies), "gold_vehicle_body_risk")
     _write(build_vehicle_usage_risk(silver_claims, silver_policies), "gold_vehicle_usage_risk")
+    _write(build_loss_ratio_contribution(silver_claims, silver_policies), "gold_loss_ratio_contribution")

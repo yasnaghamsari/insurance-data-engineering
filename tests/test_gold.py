@@ -3,8 +3,14 @@ import datetime
 from pyspark.sql import Row
 
 from insurance_pipeline.gold import (
+    OTHER_BODY,
+    UNKNOWN_BODY,
+    build_accident_grid,
+    build_accidents_by_weekday_hour,
     build_daily_accidents,
     build_daily_claims,
+    build_loss_ratio_contribution,
+    build_monthly_accidents_by_borough,
     build_monthly_claims,
     build_monthly_loss_ratio,
     build_monthly_policies,
@@ -23,6 +29,10 @@ GOLD_TABLE_NAMES = [
     "gold_loss_ratio_monthly",
     "gold_vehicle_body_risk",
     "gold_vehicle_usage_risk",
+    "gold_accident_grid",
+    "gold_accidents_weekday_hour",
+    "gold_accidents_borough_monthly",
+    "gold_loss_ratio_contribution",
 ]
 
 
@@ -300,3 +310,93 @@ def test_build_monthly_policies_keeps_one_decimal_of_vehicle_age(spark):
 
     # Ages 4 and 3 -> 3.5, not rounded to a whole year.
     assert row["avg_issue_age_of_vehicle"] == 3.5
+
+
+def _accident(lat, lon, date="2024-01-01", hour=10, injured=0, borough="QUEENS"):
+    return Row(
+        latitude=lat,
+        longitude=lon,
+        accident_date=datetime.datetime.fromisoformat(date),
+        accident_hour=hour,
+        number_of_persons_injured=injured,
+        borough=borough,
+    )
+
+
+def test_build_accident_grid_rounds_to_cells_and_keeps_only_nyc(spark):
+    df = spark.createDataFrame(
+        [
+            _accident(40.71231, -73.95114, injured=1),
+            _accident(40.71249, -73.95083, injured=None),
+            _accident(40.75, -73.98),
+            _accident(0.0, 0.0),  # bad geocode
+            _accident(41.5, -33.0),  # nowhere near NYC
+        ]
+    )
+
+    rows = {(r["latitude"], r["longitude"]): r for r in build_accident_grid(df).collect()}
+
+    assert set(rows) == {(40.712, -73.951), (40.75, -73.98)}
+    assert rows[(40.712, -73.951)]["number_of_accidents"] == 2
+    assert rows[(40.712, -73.951)]["number_of_persons_injured"] == 1
+
+
+def test_build_accidents_by_weekday_hour_is_a_full_zero_filled_iso_matrix(spark):
+    df = spark.createDataFrame(
+        [
+            _accident(40.7, -73.9, date="2024-01-01", hour=8),  # Monday
+            _accident(40.7, -73.9, date="2024-01-01", hour=8),
+            _accident(40.7, -73.9, date="2024-01-07", hour=23),  # Sunday
+            _accident(40.7, -73.9, date="2024-01-07", hour=None),  # no hour: left out
+        ]
+    )
+
+    rows = build_accidents_by_weekday_hour(df).collect()
+    counts = {(r["weekday"], r["accident_hour"]): r["number_of_accidents"] for r in rows}
+
+    assert len(rows) == 7 * 24
+    assert counts[("Mon", 8)] == 2
+    assert counts[("Sun", 23)] == 1
+    assert sum(counts.values()) == 3
+    assert {r["weekday_number"] for r in rows if r["weekday"] == "Mon"} == {1}
+
+
+def test_build_monthly_accidents_by_borough_keeps_unknown_borough_as_null(spark):
+    df = spark.createDataFrame(
+        [
+            _accident(40.7, -73.9, borough="BROOKLYN"),
+            _accident(40.7, -73.9, borough="BROOKLYN"),
+            _accident(40.7, -73.9, borough=None),
+        ],
+        "latitude double, longitude double, accident_date timestamp, accident_hour int, "
+        "number_of_persons_injured int, borough string",
+    )
+
+    rows = {r["borough"]: r["number_of_accidents"] for r in build_monthly_accidents_by_borough(df).collect()}
+
+    assert rows == {"BROOKLYN": 2, None: 1}
+
+
+def test_build_loss_ratio_contribution_reconciles_to_portfolio_loss_ratio(spark):
+    policies = [Row(policy_number=f"S{i}", body="SALOON", premium=10.0) for i in range(20)]
+    policies += [Row(policy_number="T1", body="TRUCK", premium=100.0)]  # < 20 policies -> Other
+    policies += [Row(policy_number="B1", body=" ", premium=100.0)]  # blank -> Unknown body
+    silver_policies = spark.createDataFrame(policies)
+    silver_claims = spark.createDataFrame(
+        [
+            Row(policy_number="S0", total_claim_amount=300.0),
+            Row(policy_number="T1", total_claim_amount=50.0),
+            Row(policy_number="GONE", total_claim_amount=999.0),  # not a Silver policy
+        ]
+    )
+
+    rows = {
+        r["vehicle_body"]: r for r in build_loss_ratio_contribution(silver_claims, silver_policies).collect()
+    }
+
+    # Portfolio premium 400, claims 350 -> loss ratio 87.5%, i.e. 12.5 points under 100%.
+    assert set(rows) == {"SALOON", OTHER_BODY, UNKNOWN_BODY}
+    assert rows["SALOON"]["contribution_pct_points"] == 25.0  # (300 - 200) / 400
+    assert rows[OTHER_BODY]["contribution_pct_points"] == -12.5  # (50 - 100) / 400
+    assert rows[UNKNOWN_BODY]["contribution_pct_points"] == -25.0  # (0 - 100) / 400
+    assert sum(r["contribution_pct_points"] for r in rows.values()) == 87.5 - 100
