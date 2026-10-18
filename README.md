@@ -79,55 +79,48 @@ The sample data is partly synthetic, and a few of its quirks shape the numbers:
 
 ## Dashboards
 
-Five Metabase dashboards, built from the SQL in `metabase_queries/` (one file per card — paste straight into Metabase's SQL editor).
+Five Metabase dashboards, built entirely by `scripts/setup_metabase.py` from the SQL in `metabase_queries/` (one folder per dashboard, one `.sql` file per card; each file's header comment sets its chart type, size and settings). Every card on every dashboard has its query in the repo.
 
 ### Executive Overview
-The five numbers you'd want on your desk every morning.
-- **Total claims & total claim amount** — how many claims came in and what they cost, all-time
-- **Total accidents** — all-time accident count
-- **Total policies issued** — size of the book of business
-- **Business trends** — claims, accidents, and policies issued plotted together, so you can spot whether they're moving in sync or diverging
-- **Average claim severity** — average dollar cost per claim
+- **Total claims, total claim amount, average claim severity, total accidents, total policies issued**: headline number cards
+- **Business trends (indexed)**: claims, accidents and policies issued per month, each indexed to 100 at the first month all three have data (January 2015). Raw accidents are ~200x claims, so indexing puts the three on one readable scale. Only the period where all three series exist is shown, and a month with no data is a gap, not a drop to 0.
 
 ### Claims Analysis
-A closer look at what's driving claims cost.
-- **Monthly claim volume & growth** — how many claims per month, and the month-over-month change
-- **Claim amount by type** — how the total cost splits across injury, property, and vehicle damage
-- **Weekly claim volume** — a finer-grained view that catches short spikes the monthly chart smooths over
-- **Driver age & incident hour trend** — whether the typical claimant or time-of-day is shifting over time
-- **Daily claims with a 30-day rolling average** — separates real trend from day-to-day noise
+- **Monthly claim trends**: claim volume with month-over-month growth
+- **Claim amount by type**: injury vs property vs vehicle dollars per month (stacked)
+- **Daily claims with a 30-day rolling average**: day-level cost vs the smoothed trend
+- **Weekly claim volume**: short spikes the monthly view smooths away
+- **Driver age & incident hour trend**: is the claimant profile or time of day shifting?
 
 ### Accident Analysis
-Where and how often accidents are happening.
-- **Monthly & weekly accident trends** — volume over time, at two levels of granularity
-- **Most accident-prone location by month** — which borough and zip code saw the most accidents each month
-- **Borough hotspot ranking** — across the whole dataset, which borough has topped that list the most often
-- **Daily accidents with a 30-day rolling average** — same noise-vs-trend view as claims
+- **Total accidents / accidents with no borough / share with no borough**: 22% of accidents have no borough recorded, so they're counted here rather than silently dropped from the borough chart
+- **Accident map**: the 2,000 busiest ~110 m grid cells in NYC (Gold aggregates 1.4M accidents to a 3-decimal lat/lon grid)
+- **When accidents happen**: weekday x hour matrix, color-scaled so it reads as a heatmap
+- **Monthly accidents by borough**: one line per borough over time
+- **Weekly accidents with a 4-week rolling average** and **monthly accident trends**
 
 ### Policy Analysis
-How the book of business is growing.
-- **Policy growth trend** — new policies issued per month
-- **Exposure trend** — total sum-insured written per month (the dollar risk being carried, not just the policy count)
-- **Vehicle age trend** — average age of insured vehicles at issuance, a rough underwriting-risk signal
-- **Issued vs. expired** — growth against churn, side by side
-- **Estimated active policies** — a running count of policies actually in force
+- **Policy growth trend**: new policies issued per month
+- **Issued vs. expired** and **estimated active policies**: growth vs churn, and the running book size
+- **Exposure trend**: total sum insured written per month
+- **Vehicle age trend**: average vehicle age at issuance (1 decimal)
 
 ### Vehicle & Loss Ratio Risk
-The dashboard that answers "are we actually making money on this?" — built from a real join between claims and the policies they were filed against, not just independent time series.
-- **Overall loss ratio** — incurred claims ÷ written premium, portfolio-wide (see [How the loss ratio is calculated](#how-the-loss-ratio-is-calculated))
-- **Riskiest vehicle body type** — the segment with the worst loss ratio (among those with enough policies for the number to mean anything)
-- **Loss ratio trend** — how the ratio has moved month to month, by incident month, with a 3-month rolling ratio
-- **Loss ratio by vehicle body** — which vehicle types are profitable to insure and which aren't
-- **Claim frequency by vehicle body** — how often each vehicle type claims, which is a different question from how expensive each claim is
-- **Private vs. commercial risk** — a direct comparison of the two biggest usage segments
+- **Overall loss ratio** and **riskiest vehicle body**: number cards (see [How the loss ratio is calculated](#how-the-loss-ratio-is-calculated))
+- **Loss ratio trend**: monthly ratio and 3-month rolling ratio; months with no written premium are gaps, not 0%
+- **Loss ratio contribution by vehicle body**: waterfall of how many points each body type adds to or takes off the portfolio loss ratio relative to break-even (100%); the bars add up to the portfolio ratio minus 100
+- **Underwriting risk map**: bubble chart per body type (at least 20 policies): claim frequency (x) vs average claim severity (y), bubble size = written premium
+- **Loss ratio by vehicle body** and **private vs. commercial risk**
 
 ## Screenshots
 
-<table>
-<tr><td><img src="images/executive_overview.png" alt="Executive Overview"></td><td><img src="images/claims_analysis.png" alt="Claims Analysis"></td></tr>
-<tr><td><img src="images/accident_analysis.png" alt="Accident Analysis"></td><td><img src="images/policy_analysis.png" alt="Policy Analysis"></td></tr>
-<tr><td colspan="2"><img src="images/vehicle_loss_ratio_risk.png" alt="Vehicle & Loss Ratio Risk"></td></tr>
-</table>
+Generated by `scripts/screenshot_dashboards.py` (see [Running it](#running-it)).
+
+| | |
+|---|---|
+| **Executive Overview**<br><img src="images/executive_overview.png" alt="Executive Overview"> | **Claims Analysis**<br><img src="images/claims_analysis.png" alt="Claims Analysis"> |
+| **Accident Analysis**<br><img src="images/accident_analysis.png" alt="Accident Analysis"> | **Policy Analysis**<br><img src="images/policy_analysis.png" alt="Policy Analysis"> |
+| **Vehicle & Loss Ratio Risk**<br><img src="images/vehicle_loss_ratio_risk.png" alt="Vehicle & Loss Ratio Risk"> | **Spark cluster** (master UI during a DAG run)<br><img src="images/spark_cluster.png" alt="Spark standalone cluster with two workers"> |
 
 ## Project layout
 
@@ -157,7 +150,30 @@ This brings up Airflow (http://localhost:8080, admin/admin), MySQL and MongoDB s
 docker compose exec clickhouse clickhouse-client --query "SELECT * FROM insurance.gold_claims_monthly"
 ```
 
-Then connect Metabase to ClickHouse and build the dashboards from `metabase_queries/`.
+Metabase runs at http://localhost:3000. Build every dashboard from `metabase_queries/` with one command, no clicking: put an admin email and password of your choice in `.env` (see `.env.example`; `.env` is git-ignored), then
+
+```bash
+pip install requests
+python scripts/setup_metabase.py          # first-time setup, ClickHouse connection, collections, cards, dashboards
+```
+
+It's idempotent: re-running updates the existing cards and dashboards in place, and archives cards whose `.sql` file was deleted. To regenerate the screenshots in `images/`:
+
+```bash
+pip install playwright && playwright install chromium
+python scripts/screenshot_dashboards.py   # PLAYWRIGHT_CHANNEL=chrome to use an installed Chrome instead
+```
+
+### On a multi-node Spark cluster
+
+By default every DAG task runs Spark in local mode inside the Airflow container. The `cluster` profile adds a standalone Spark cluster (1 master + 2 workers, built from the same image as Airflow, so Spark 3.5.3 and Python 3.11 match the driver exactly) and points the pipeline at it:
+
+```bash
+SPARK_MASTER=spark://spark-master:7077 docker compose --profile cluster up -d --build
+docker compose exec airflow-webserver airflow dags trigger insurance_pipeline_dag
+```
+
+(PowerShell: `$env:SPARK_MASTER="spark://spark-master:7077"` first.) The Spark master UI is at http://localhost:8090. Each worker offers 2 cores and 1.5 GB to one 1 GB executor; the driver runs inside the Airflow task with 2 GB. With Airflow, the three databases, Metabase and the cluster all running, give Docker **at least 8 GB of RAM** (verified on 8 GB). Workers mount the warehouse volume and `./data` at the same paths as Airflow, so executors read sources and write Delta files directly. On the sample data, a cluster run produces the same row count in every Gold table as local mode.
 
 The ClickHouse table definitions (`docker/clickhouse/init.sql`) and the MySQL/MongoDB seeds only run when their volume is first created. After pulling changes to any of them, recreate the volumes with `docker compose down -v` before `docker compose up`.
 
