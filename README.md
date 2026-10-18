@@ -50,9 +50,9 @@ Both modes load the same data. (An earlier, larger claims file, with 50,642 synt
 
 **Bronze** ingests each source's raw data with minimal changes — just enough to land it as a table.
 
-**Silver** cleans it up: parsing dates, standardizing column names, dropping rows with missing required fields or values that are obviously wrong (negative premiums, GPS coordinates outside Earth's valid range, that kind of thing).
+**Silver** cleans it up: parsing dates, standardizing column names, dropping rows with missing required fields or values that are obviously wrong (negative premiums, GPS coordinates outside Earth's valid range), keeping one row per policy number, and turning the source's "unknown" placeholders into nulls (see [Data-quality notes](#data-quality-notes)).
 
-**The quality gate** runs a Great Expectations suite against every Silver table as a second check — if anything still looks wrong, the pipeline stops here instead of letting it flow into Gold.
+**The quality gate** runs a Great Expectations suite against every Silver table as a second check (required fields present, values in range, claim and policy numbers unique) — if anything still looks wrong, the pipeline stops here instead of letting it flow into Gold.
 
 **Gold** turns clean data into the numbers a dashboard actually needs: daily/weekly/monthly rollups of claims and accidents, policy growth and exposure, and — the one part of this pipeline that actually connects claims back to the policies that generated them — real loss ratio and per-vehicle-segment risk.
 
