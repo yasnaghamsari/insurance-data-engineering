@@ -140,7 +140,3 @@ ruff check . && black --check .
 ```
 
 Needs a JDK (11 or 17) on your `PATH` for PySpark. On Windows you'll also need `winutils.exe` for Delta Lake — Docker Compose sidesteps this entirely and is the easier path.
-
----
-
-**Yasna Kazemghamsari** — Data Engineering | PySpark | Databricks | Data Analytics
