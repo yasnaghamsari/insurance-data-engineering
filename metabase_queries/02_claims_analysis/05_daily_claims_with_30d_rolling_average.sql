@@ -1,7 +1,8 @@
 -- Chart type: line chart, x = claim_date — two series: total_claim_amount (noisy
 -- daily line) and rolling_30d_avg_claim_amount (smoothed line) on top of it.
 -- Day-level claim cost with a 30-day rolling average overlaid to separate
--- day-to-day noise from the real underlying trend.
+-- day-to-day noise from the real underlying trend. The average is over 30
+-- calendar days, with days that had no claims counted as zero.
 SELECT
     claim_date,
     total_claim_amount,

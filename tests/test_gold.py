@@ -1,10 +1,14 @@
+import datetime
+
 from pyspark.sql import Row
 
 from insurance_pipeline.gold import (
     build_daily_accidents,
     build_daily_claims,
+    build_monthly_claims,
     build_monthly_loss_ratio,
     build_vehicle_body_risk,
+    build_weekly_claims,
 )
 
 GOLD_TABLE_NAMES = [
@@ -83,28 +87,140 @@ def test_build_daily_accidents_picks_most_frequent_borough_not_max(spark):
     assert result["most_common_zip_code"] == 10451
 
 
-def test_build_monthly_loss_ratio_divides_claims_by_premium(spark):
-    claims_monthly = spark.createDataFrame(
-        [
-            Row(claim_year_month="2024-01", total_claim_amount=100.0),
-            Row(claim_year_month="2024-02", total_claim_amount=50.0),
-        ]
+def _claim(claim_datetime, total_claim_amount=100.0, **overrides):
+    base = dict(
+        claim_datetime=claim_datetime,
+        total_claim_amount=total_claim_amount,
+        injury_claim_amount=0.0,
+        property_claim_amount=0.0,
+        vehicle_claim_amount=total_claim_amount,
+        incident_hour=10,
+        driver_age=30,
     )
-    policies_monthly = spark.createDataFrame(
+    base.update(overrides)
+    return Row(**base)
+
+
+def test_build_weekly_claims_labels_weeks_by_iso_week_based_year(spark):
+    dates = [
+        datetime.datetime(2015, 12, 31),  # Thu, ISO 2015-W53
+        datetime.datetime(2016, 1, 1),  # Fri, still ISO 2015-W53, not "2016-53"
+        datetime.datetime(2016, 1, 4),  # Mon, ISO 2016-W01
+        datetime.datetime(2018, 1, 1),  # Mon, ISO 2018-W01
+        datetime.datetime(2018, 12, 31),  # Mon, ISO 2019-W01, not merged into "2018-01"
+        datetime.datetime(2019, 1, 1),  # Tue, ISO 2019-W01
+    ]
+    df = spark.createDataFrame([_claim(d) for d in dates])
+
+    rows = build_weekly_claims(df).orderBy("claim_year_week").collect()
+
+    assert [(r["claim_year_week"], r["number_of_claims"]) for r in rows] == [
+        ("2015-53", 2),
+        ("2016-01", 1),
+        ("2018-01", 1),
+        ("2019-01", 2),
+    ]
+    assert "4w_rolling_avg_total_claim_amount" in rows[0].asDict()
+
+
+def test_build_daily_claims_rolling_average_spans_30_calendar_days(spark):
+    df = spark.createDataFrame(
         [
-            Row(year_month="2024-01", total_premium=1000.0),
-            # No premium written this month (e.g. issuances had already
-            # tapered off) — loss_ratio_pct must be null, not a division
-            # error, since there's nothing to divide by.
-            Row(year_month="2024-02", total_premium=0.0),
+            _claim(datetime.datetime(2024, 1, 1), 300.0),
+            _claim(datetime.datetime(2024, 1, 2), 30.0),
+            # 30 days after Jan 1: the window is Jan 2 - Jan 31, so Jan 1 is
+            # out, and the 28 days with no claims count as zero.
+            _claim(datetime.datetime(2024, 1, 31), 600.0),
         ]
     )
 
-    rows = build_monthly_loss_ratio(claims_monthly, policies_monthly).collect()
+    rows = build_daily_claims(df).orderBy("claim_date").collect()
+
+    assert [r["30d_rolling_avg_total_claim_amount"] for r in rows] == [
+        300.0,  # only 1 day of history so far
+        165.0,  # (300 + 30) / 2 days
+        21.0,  # (30 + 600) / 30 days
+    ]
+
+
+def test_build_monthly_claims_rolling_average_covers_three_months(spark):
+    df = spark.createDataFrame(
+        [_claim(datetime.datetime(2024, month, 15), month * 100.0) for month in (1, 2, 3, 4)]
+    )
+
+    rows = build_monthly_claims(df).orderBy("claim_year_month").collect()
+
+    # April: avg(Feb, Mar, Apr) = 300, not avg(Jan..Apr) = 250.
+    assert rows[-1]["3m_rolling_avg_total_claim_amount"] == 300.0
+
+
+def _policy(policy_number, issue_date, premium, effective_date=None, expiry_date=None):
+    return Row(
+        policy_number=policy_number,
+        issue_date=issue_date,
+        effective_date=effective_date or issue_date,
+        expiry_date=expiry_date or issue_date.replace(year=issue_date.year + 1),
+        premium=premium,
+    )
+
+
+def _loss_claim(policy_number, incident_date, claim_datetime, total_claim_amount):
+    return Row(
+        policy_number=policy_number,
+        incident_date=incident_date,
+        claim_datetime=claim_datetime,
+        total_claim_amount=total_claim_amount,
+    )
+
+
+def test_build_monthly_loss_ratio_uses_incident_month_and_silver_policies_only(spark):
+    d = datetime.date
+    silver_policies = spark.createDataFrame(
+        [
+            _policy("P1", d(2024, 1, 1), 1000.0),
+            _policy("P2", d(2024, 3, 1), 500.0),
+        ]
+    )
+    silver_claims = spark.createDataFrame(
+        [
+            # Incident in January, filed in February: belongs to January.
+            _loss_claim("P1", d(2024, 1, 20), datetime.datetime(2024, 2, 3), 100.0),
+            # Incident in February, but no premium was written in February:
+            # the ratio must be null, not 0 or a division error.
+            _loss_claim("P1", d(2024, 2, 10), datetime.datetime(2024, 2, 11), 50.0),
+            # Before P2's effective date: counted, but flagged.
+            _loss_claim("P2", d(2024, 2, 20), datetime.datetime(2024, 3, 5), 25.0),
+            # Policy didn't survive Silver: excluded, since its premium is
+            # missing from the denominator too.
+            _loss_claim("DROPPED", d(2024, 1, 5), datetime.datetime(2024, 1, 6), 9999.0),
+        ]
+    )
+
+    rows = build_monthly_loss_ratio(silver_claims, silver_policies).collect()
     result = {r["year_month"]: r for r in rows}
 
+    assert set(result) == {"2024-01", "2024-02", "2024-03"}
+    assert result["2024-01"]["total_claim_amount"] == 100.0
     assert result["2024-01"]["loss_ratio_pct"] == 10.0
+    assert result["2024-02"]["number_of_claims"] == 2
+    assert result["2024-02"]["total_premium"] == 0.0
     assert result["2024-02"]["loss_ratio_pct"] is None
+    assert result["2024-02"]["3m_rolling_avg_loss_ratio_pct"] is None
+    assert result["2024-02"]["claims_outside_policy_period"] == 1
+    assert result["2024-03"]["number_of_claims"] == 0
+    assert result["2024-03"]["loss_ratio_pct"] == 0.0
+    # Ratio of the 3-month sums: (100 + 75 + 0) / (1000 + 0 + 500).
+    assert result["2024-03"]["3m_rolling_avg_loss_ratio_pct"] == 11.67
+
+
+def test_gold_loss_ratio_monthly_counts_only_claims_on_silver_policies(spark, gold_tables):
+    on_silver_policies = (
+        spark.table("silver_claims")
+        .join(spark.table("silver_policies").select("policy_number"), on="policy_number", how="inner")
+        .count()
+    )
+    totals = spark.table("gold_loss_ratio_monthly").agg({"number_of_claims": "sum"}).first()[0]
+    assert totals == on_silver_policies
 
 
 def test_build_vehicle_body_risk_attributes_claims_via_policy_join(spark):

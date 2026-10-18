@@ -49,6 +49,27 @@ Three domains, each from a different source, joined together for analysis:
 
 **Gold** turns clean data into the numbers a dashboard actually needs: daily/weekly/monthly rollups of claims and accidents, policy growth and exposure, and — the one part of this pipeline that actually connects claims back to the policies that generated them — real loss ratio and per-vehicle-segment risk.
 
+### How the loss ratio is calculated
+
+Every loss-ratio number on the dashboards (overall, monthly, and per vehicle segment) uses the same basis:
+
+- **Claims**: incurred claim amounts for claims whose policy made it into Silver. A claim whose policy was dropped (for example, for a negative premium) is left out, because that policy's premium isn't in the denominator either.
+- **Premium**: *written* premium. Each policy's full premium is counted in the month it was issued. This is not earned premium (premium spread over the policy term), which the pipeline doesn't compute.
+- **Monthly attribution**: a claim counts toward the month of its *incident*, not the month it was filed. A month with claims but no written premium shows no loss ratio rather than 0%.
+
+### Data-quality notes
+
+The sample data is partly synthetic, and a few of its quirks shape the numbers:
+
+- About half the policies (112,696 of 227,484 raw rows) have no sum insured. They're kept, so exposure totals only cover policies that have one.
+- 10,199 raw policy rows have a negative premium and are dropped in Silver. 7 policy numbers appear more than once; Silver keeps one row per policy (latest issue date, then latest expiry, then highest premium).
+- In the claims, a driver age of 0 and a licence date of 01-01-1900 are placeholders for "unknown". Silver turns them into nulls, so they don't drag down the average driver age.
+- Only about 29% of claim incidents fall inside their policy's effective-to-expiry period (28.5% on the sample). Those claims are still counted. `gold_loss_ratio_monthly.claims_outside_policy_period` counts the rest per month, and the Gold step logs the total.
+
+### Rolling averages
+
+`30d_` columns on the daily tables average over 30 calendar days, with days that have no claims or accidents counted as zero. `4w_` columns on the weekly tables cover the current week plus the 3 before it. `3m_` columns on the monthly tables cover the current month plus the 2 before it. Weeks are ISO weeks, labelled by ISO week-based year (so 2016-01-01 falls in `2015-53`).
+
 ## Dashboards
 
 Five Metabase dashboards, built from the SQL in `metabase_queries/` (one file per card — paste straight into Metabase's SQL editor).
@@ -86,9 +107,9 @@ How the book of business is growing.
 
 ### Vehicle & Loss Ratio Risk
 The dashboard that answers "are we actually making money on this?" — built from a real join between claims and the policies they were filed against, not just independent time series.
-- **Overall loss ratio** — incurred claims ÷ written premium, portfolio-wide
+- **Overall loss ratio** — incurred claims ÷ written premium, portfolio-wide (see [How the loss ratio is calculated](#how-the-loss-ratio-is-calculated))
 - **Riskiest vehicle body type** — the segment with the worst loss ratio (among those with enough policies for the number to mean anything)
-- **Loss ratio trend** — how the ratio has moved month to month
+- **Loss ratio trend** — how the ratio has moved month to month, by incident month, with a 3-month rolling ratio
 - **Loss ratio by vehicle body** — which vehicle types are profitable to insure and which aren't
 - **Claim frequency by vehicle body** — how often each vehicle type claims, which is a different question from how expensive each claim is
 - **Private vs. commercial risk** — a direct comparison of the two biggest usage segments
