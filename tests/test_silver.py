@@ -2,9 +2,11 @@ from pyspark.sql import Row
 
 from insurance_pipeline.silver import (
     get_column_case_insensitive,
+    load_schema,
     rename_from_schema,
     require_non_null,
     transform_claims,
+    transform_policies,
 )
 
 
@@ -97,3 +99,130 @@ def test_transform_claims_drops_rows_missing_required_fields(spark):
 
     assert result.count() == 1
     assert result.first()["claim_number"] == "c1"
+
+
+def test_transform_claims_nulls_driver_age_and_license_date_sentinels(spark):
+    df = spark.createDataFrame(
+        [
+            _claim_row(
+                claim_no="zero_age",
+                driver=Row(age=0.0, insured_relationship="own-child", license_issue_date="01-01-1900"),
+            ),
+            _claim_row(
+                claim_no="too_young",
+                driver=Row(age=15.0, insured_relationship="own-child", license_issue_date="06-03-2007"),
+            ),
+            _claim_row(
+                claim_no="valid",
+                driver=Row(age=16.0, insured_relationship="wife", license_issue_date="06-03-2007"),
+            ),
+        ]
+    )
+
+    result = {r["claim_number"]: r for r in transform_claims(df).collect()}
+
+    assert result["zero_age"]["driver_age"] is None
+    assert result["zero_age"]["license_issue_date"] is None
+    assert result["too_young"]["driver_age"] is None
+    assert result["valid"]["driver_age"] == 16.0
+    assert str(result["valid"]["license_issue_date"]) == "2007-03-06"
+
+
+def test_transform_claims_keeps_hour_23_and_drops_hour_24(spark):
+    df = spark.createDataFrame(
+        [
+            _claim_row(
+                claim_no="h23",
+                incident=Row(date="06-08-2016", hour=23, type="Parked Car", severity="Trivial Damage"),
+            ),
+            _claim_row(
+                claim_no="h24",
+                incident=Row(date="06-08-2016", hour=24, type="Parked Car", severity="Trivial Damage"),
+            ),
+        ]
+    )
+
+    assert [r["claim_number"] for r in transform_claims(df).collect()] == ["h23"]
+
+
+def _policy_row(**overrides):
+    # Raw Bronze column names, as they appear in data/samples/mysql/policies.csv.
+    base = dict(
+        CUST_ID=1.0,
+        POLICY_NO="p1",
+        POLICYTYPE="COMP",
+        POL_ISSUE_DATE="04-01-2015",
+        POL_EFF_DATE="24-02-2015",
+        POL_EXPIRY_DATE="23-02-2016",
+        BODY="SALOON",
+        MAKE="TOYOTA",
+        MODEL="AVALON",
+        MODEL_YEAR=2004.0,
+        CHASSIS_NO="C1",
+        USE_OF_VEHICLE="PRIVATE",
+        DRV_DOB="01-01-1980",
+        BOROUGH="BRONX",
+        NEIGHBORHOOD="CENTRAL BRONX",
+        ZIP_CODE=10453.0,
+        PRODUCT="NOT CLASSIFIED",
+        SUM_INSURED=14080.0,
+        PREMIUM=1090.0,
+        DEDUCTABLE=2000,
+    )
+    base.update(overrides)
+    return Row(**base)
+
+
+def _transform_policy_rows(spark, cfg, rows):
+    df = spark.createDataFrame(rows)
+    return transform_policies(df, load_schema(cfg.policies_schema_path))
+
+
+def test_transform_policies_keeps_null_sum_insured_but_drops_negatives(spark, cfg):
+    rows = [
+        _policy_row(POLICY_NO="null_si", SUM_INSURED=None),
+        _policy_row(POLICY_NO="neg_si", SUM_INSURED=-1.0),
+        _policy_row(POLICY_NO="neg_premium", PREMIUM=-1320.0),
+        _policy_row(POLICY_NO="valid"),
+    ]
+
+    result = {r["policy_number"]: r for r in _transform_policy_rows(spark, cfg, rows).collect()}
+
+    assert set(result) == {"null_si", "valid"}
+    assert result["null_si"]["sum_insured"] is None
+
+
+def test_transform_policies_keeps_one_row_per_policy_number(spark, cfg):
+    rows = [
+        # Latest issue_date wins, even with a lower premium.
+        _policy_row(POLICY_NO="p1", POL_ISSUE_DATE="01-01-2017", PREMIUM=100.0),
+        _policy_row(POLICY_NO="p1", POL_ISSUE_DATE="01-05-2017", PREMIUM=50.0),
+        # Same issue_date: latest expiry_date wins (102000969/RI in the raw feed).
+        _policy_row(POLICY_NO="p2", POL_EXPIRY_DATE="10-01-2019", BODY=None),
+        _policy_row(POLICY_NO="p2", POL_EXPIRY_DATE="10-02-2019", BODY="SALOON"),
+        # Everything else equal: the higher premium wins (102120560).
+        _policy_row(POLICY_NO="p3", PREMIUM=0.0),
+        _policy_row(POLICY_NO="p3", PREMIUM=1900.0),
+        # Only the body differs (102134102): broken by sorting, so the same
+        # row is always kept regardless of input order.
+        _policy_row(POLICY_NO="p4", BODY="SALOON"),
+        _policy_row(POLICY_NO="p4", BODY="4 WD"),
+    ]
+
+    result = _transform_policy_rows(spark, cfg, rows).collect()
+    by_policy = {r["policy_number"]: r for r in result}
+
+    assert len(result) == 4
+    assert str(by_policy["p1"]["issue_date"]) == "2017-05-01"
+    assert str(by_policy["p2"]["expiry_date"]) == "2019-02-10"
+    assert by_policy["p3"]["premium"] == 1900.0
+    assert by_policy["p4"]["body"] == "4 WD"
+
+    reversed_result = _transform_policy_rows(spark, cfg, list(reversed(rows))).collect()
+    assert {r["policy_number"]: r["body"] for r in reversed_result}["p4"] == "4 WD"
+
+
+def test_silver_policies_keeps_policies_with_null_sum_insured(spark, silver_tables):
+    df = spark.table("silver_policies")
+    assert df.filter(df.sum_insured.isNull()).count() > 0
+    assert df.count() == df.select("policy_number").distinct().count()
