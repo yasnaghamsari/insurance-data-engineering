@@ -1,11 +1,11 @@
 # Insurance Data Engineering Pipeline
 
-An end-to-end data pipeline for an auto insurance book of business: it pulls claims, accidents, and policy data from three different source systems, cleans and validates it, aggregates it into business-ready tables, and serves it through a set of Metabase dashboards. Runs entirely locally with Docker Compose.
+An end-to-end data pipeline for an auto insurance book of business: it pulls policies from MySQL, claims from MongoDB, and accidents from a local copy of NYC open data (standing in for an S3 bucket), cleans and validates it, aggregates it into business-ready tables, and serves it through a set of Metabase dashboards. Runs entirely locally with Docker Compose.
 
 ## How it works
 
 ```
-MySQL / MongoDB / S3 (raw sources)
+MySQL (policies) / MongoDB (claims) / local file standing in for S3 (accidents)
     |
     v
 Bronze   — raw data, ingested as-is
@@ -33,11 +33,18 @@ PySpark & Delta Lake for the transforms, Great Expectations for data quality, Ai
 
 Three domains, each from a different source, joined together for analysis:
 
-| Domain | Source | What it captures |
-|---|---|---|
-| **Policies** | MySQL | who's insured, what vehicle, what premium, when it's active |
-| **Claims** | MongoDB | what was claimed, how much, by whom, why |
-| **Accidents** | S3 (NYC open data) | where and when accidents happened |
+| Domain | Source | Sample file it's seeded from | What it captures |
+|---|---|---|---|
+| **Policies** | MySQL | `data/samples/mysql/policies.csv` | who's insured, what vehicle, what premium, when it's active |
+| **Claims** | MongoDB | `data/samples/mongodb/claims.json` | what was claimed, how much, by whom, why |
+| **Accidents** | Local file, standing in for S3 | `data/samples/s3/external/accidents.csv.gz` | where and when accidents happened (a copy of NYC Open Data's Motor Vehicle Collisions data) |
+
+Where Bronze reads from is set by `SOURCE_MODE`:
+
+- `databases` (what the Airflow DAG uses): policies are read from the MySQL container over JDBC, and claims from the MongoDB container. Docker Compose seeds both from the sample files above.
+- `files` (the default, used by the tests and CI): policies and claims are read straight from those same sample files, so there's no database to run.
+
+Both modes load the same data. (An earlier, larger claims file, with 50,642 synthetic claims against the same policies, was dropped. It gave a loss ratio of over 700% against this policy book, so it clearly wasn't generated to match it.) Accidents always come from the local file. There's no S3 bucket involved; the `s3/` folder name just marks the file's role.
 
 ## The pipeline
 
@@ -144,7 +151,7 @@ docker compose up -d --build
 docker compose exec airflow-webserver airflow dags trigger insurance_pipeline_dag
 ```
 
-This brings up Airflow (http://localhost:8080, admin/admin), MySQL and MongoDB seeded with sample data, and ClickHouse. Once the DAG finishes, check the results:
+This brings up Airflow (http://localhost:8080, admin/admin), MySQL and MongoDB seeded with the sample data, and ClickHouse. Airflow waits until both databases have finished seeding. The DAG runs with `SOURCE_MODE=databases`, so Bronze reads policies and claims from those two containers. Once the DAG finishes, check the results:
 
 ```bash
 docker compose exec clickhouse clickhouse-client --query "SELECT * FROM insurance.gold_claims_monthly"
@@ -152,12 +159,19 @@ docker compose exec clickhouse clickhouse-client --query "SELECT * FROM insuranc
 
 Then connect Metabase to ClickHouse and build the dashboards from `metabase_queries/`.
 
+The ClickHouse table definitions (`docker/clickhouse/init.sql`) and the MySQL/MongoDB seeds only run when their volume is first created. After pulling changes to any of them, recreate the volumes with `docker compose down -v` before `docker compose up`.
+
 ### Local development, without Docker
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 pytest -q
 ruff check . && black --check .
+
+# Run the pipeline (or one step: bronze, silver, quality, gold, clickhouse) against the sample files
+python -m insurance_pipeline.run all
 ```
+
+Local runs default to `SOURCE_MODE=files`. To read from your own MySQL/MongoDB instead, set `SOURCE_MODE=databases` and the `MYSQL_*`/`MONGO_*` variables listed in `.env.example`.
 
 Needs a JDK (11 or 17) on your `PATH` for PySpark. On Windows you'll also need `winutils.exe` for Delta Lake — Docker Compose sidesteps this entirely and is the easier path.

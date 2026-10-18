@@ -18,6 +18,18 @@ ENV = {
     "DATA_ROOT": "/opt/airflow/data/samples",
     "SCHEMA_ROOT": "/opt/airflow/data/schemas",
     "WAREHOUSE_DIR": "/opt/airflow/warehouse",
+    # Bronze reads policies from the mysql service and claims from the mongo
+    # service (both seeded from data/samples by docker-compose.yml) instead
+    # of from the sample files directly. Accidents are still a local file.
+    "SOURCE_MODE": "databases",
+    "MYSQL_HOST": "mysql",
+    "MYSQL_PORT": "3306",
+    "MYSQL_USER": "root",
+    "MYSQL_PASSWORD": "root",
+    "MYSQL_DATABASE": "insurance",
+    "MONGO_URI": "mongodb://mongo:27017",
+    "MONGO_DATABASE": "insurance",
+    "MONGO_CLAIMS_COLLECTION": "claims",
     "CLICKHOUSE_HOST": "clickhouse",
     "CLICKHOUSE_PORT": "8123",
     "CLICKHOUSE_USER": "default",

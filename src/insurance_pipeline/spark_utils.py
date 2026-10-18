@@ -14,6 +14,15 @@ from pyspark.sql import SparkSession
 
 from insurance_pipeline.config import PipelineConfig
 
+MYSQL_JDBC_PACKAGE = "com.mysql:mysql-connector-j:8.4.0"
+
+
+def extra_spark_packages(cfg: PipelineConfig) -> list[str]:
+    """Maven packages needed beyond Delta Lake. The MySQL JDBC driver is only
+    pulled in when Bronze actually reads from MySQL, so file-mode runs (tests,
+    CI) don't need to download it."""
+    return [MYSQL_JDBC_PACKAGE] if cfg.source_mode == "databases" else []
+
 
 def get_local_spark_session(cfg: PipelineConfig, app_name: str = "insurance-pipeline") -> SparkSession:
     # Without this, Spark spawns "python"/"python3" off PATH to launch worker
@@ -59,12 +68,16 @@ def get_local_spark_session(cfg: PipelineConfig, app_name: str = "insurance-pipe
         .master("local[*]")
     )
 
+    packages = extra_spark_packages(cfg)
     try:
         from delta import configure_spark_with_delta_pip
 
-        builder = configure_spark_with_delta_pip(builder)
+        # Sets spark.jars.packages itself, so extra packages have to go
+        # through it rather than a separate .config() call it would overwrite.
+        builder = configure_spark_with_delta_pip(builder, extra_packages=packages)
     except ImportError:
         # delta-spark not installed (e.g. lightweight lint-only environments).
-        pass
+        if packages:
+            builder = builder.config("spark.jars.packages", ",".join(packages))
 
     return builder.getOrCreate()
