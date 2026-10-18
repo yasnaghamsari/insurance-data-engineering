@@ -1,6 +1,6 @@
 """Silver layer: cleaning and standardization.
 
-Ported from ``notebooks/silver.py``. Each dataset follows the same pattern:
+Ported from the original Databricks notebook. Each dataset follows the same pattern:
 read the Bronze table, standardize names/types, add derived fields, apply
 data-quality filters, write the Silver Delta table.
 """

@@ -1,6 +1,6 @@
 # Insurance Data Engineering Pipeline
 
-An end-to-end data pipeline for an auto insurance book of business: it pulls claims, accidents, and policy data from three different source systems, cleans and validates it, aggregates it into business-ready tables, and serves it through a set of Metabase dashboards. Runs entirely locally with Docker Compose, or on Databricks.
+An end-to-end data pipeline for an auto insurance book of business: it pulls claims, accidents, and policy data from three different source systems, cleans and validates it, aggregates it into business-ready tables, and serves it through a set of Metabase dashboards. Runs entirely locally with Docker Compose.
 
 ## How it works
 
@@ -23,7 +23,7 @@ Gold     — business-ready aggregates (claims, accidents, policies, loss ratio)
 ClickHouse  →  Metabase dashboards
 ```
 
-This is a [Medallion Architecture](https://www.databricks.com/glossary/medallion-architecture): each layer only cleans up after the one before it, so you can always trace a number on a dashboard back to the raw record it came from. Everything is orchestrated by Airflow, whether it's running in Docker or on Databricks.
+This is a [Medallion Architecture](https://www.databricks.com/glossary/medallion-architecture): each layer only cleans up after the one before it, so you can always trace a number on a dashboard back to the raw record it came from. Everything is orchestrated by Airflow.
 
 ## Tech stack
 
@@ -105,7 +105,6 @@ The dashboard that answers "are we actually making money on this?" — built fro
 
 ```
 ├── src/insurance_pipeline/   # all the transform logic — Bronze, Silver, quality, Gold, ClickHouse load
-├── notebooks/                # Databricks entrypoints that call into src/insurance_pipeline
 ├── dags/                     # the Airflow DAG
 ├── docker/                   # Dockerfiles and seed SQL for the local stack
 ├── tests/                    # pytest suite, runs against a local Spark session
@@ -117,7 +116,7 @@ The dashboard that answers "are we actually making money on this?" — built fro
 
 ## Running it
 
-### Locally with Docker Compose (easiest — no Databricks account needed)
+### Locally with Docker Compose (recommended)
 
 ```bash
 docker compose up -d --build
@@ -131,10 +130,6 @@ docker compose exec clickhouse clickhouse-client --query "SELECT * FROM insuranc
 ```
 
 Then connect Metabase to ClickHouse and build the dashboards from `metabase_queries/`.
-
-### On Databricks
-
-Clone the repo as a Databricks Repo, then run `notebooks/bronze.py`, `notebooks/silver.py`, and `notebooks/gold.py` in order — each installs `insurance_pipeline` from the repo checkout and calls the same functions used locally. Load the Gold tables into ClickHouse with `insurance_pipeline.clickhouse_loader.run_clickhouse_load` and point Metabase at it from there.
 
 ### Local development, without Docker
 

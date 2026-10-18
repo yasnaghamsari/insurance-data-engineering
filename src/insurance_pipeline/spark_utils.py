@@ -1,8 +1,7 @@
-"""Local (non-Databricks) SparkSession construction.
+"""Local SparkSession construction.
 
-On Databricks, notebooks use the runtime-injected ``spark`` object directly and
-never call this module. Everywhere else (local CLI, Airflow tasks, pytest) we
-need to build one ourselves, with Delta Lake configured.
+The local CLI, Airflow tasks, and pytest all build their SparkSession here,
+with Delta Lake configured.
 """
 
 from __future__ import annotations

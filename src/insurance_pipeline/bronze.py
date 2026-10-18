@@ -1,6 +1,6 @@
 """Bronze layer: raw ingestion with minimal processing.
 
-Ported from the original ``notebooks/bronze.py`` cells. Behavior is unchanged;
+Ported from the original Databricks notebook cells. Behavior is unchanged;
 only the hardcoded workspace paths were replaced with :class:`PipelineConfig`.
 """
 

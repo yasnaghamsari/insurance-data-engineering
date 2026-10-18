@@ -1,6 +1,6 @@
 """Gold layer: business-ready aggregations.
 
-Ported from ``notebooks/gold.py`` and cleaned up in the process (the original
+Ported from the original Databricks notebook and cleaned up in the process (the original
 notebook had grown some copy/paste debris from iterative editing):
 
 - ``gold_claims_daily`` is now actually written. The original notebook computed
