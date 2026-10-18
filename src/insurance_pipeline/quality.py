@@ -50,9 +50,10 @@ def silver_claims_expectations() -> list:
     xp = gx.expectations
     return [
         xp.ExpectColumnValuesToNotBeNull(column="claim_number"),
+        xp.ExpectColumnValuesToBeUnique(column="claim_number"),
         xp.ExpectColumnValuesToNotBeNull(column="policy_number"),
         xp.ExpectColumnValuesToNotBeNull(column="incident_date"),
-        xp.ExpectColumnValuesToBeBetween(column="incident_hour", min_value=0, max_value=24),
+        xp.ExpectColumnValuesToBeBetween(column="incident_hour", min_value=0, max_value=23),
         xp.ExpectColumnValuesToBeBetween(column="total_claim_amount", min_value=0),
     ]
 
@@ -62,8 +63,13 @@ def silver_policies_expectations() -> list:
     return [
         xp.ExpectColumnValuesToNotBeNull(column="customer_id"),
         xp.ExpectColumnValuesToNotBeNull(column="policy_number"),
+        # Silver deduplicates on policy_number; a repeat here would make the
+        # claims-to-policies join in Gold count a claim once per copy.
+        xp.ExpectColumnValuesToBeUnique(column="policy_number"),
         xp.ExpectColumnValuesToNotBeNull(column="issue_date"),
         xp.ExpectColumnValuesToBeBetween(column="premium", min_value=0),
+        # Null sum_insured is allowed (it's missing on about half the raw
+        # policies); this range check skips nulls and only rejects negatives.
         xp.ExpectColumnValuesToBeBetween(column="sum_insured", min_value=0),
     ]
 

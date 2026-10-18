@@ -18,7 +18,8 @@ def warehouse_dir():
 
 @pytest.fixture(scope="session")
 def cfg(warehouse_dir):
-    return PipelineConfig(warehouse_dir=warehouse_dir)
+    # Always local mode, even if SPARK_MASTER happens to be set in the shell.
+    return PipelineConfig(warehouse_dir=warehouse_dir, spark_master="local[*]")
 
 
 @pytest.fixture(scope="session")

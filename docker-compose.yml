@@ -1,13 +1,26 @@
-x-airflow-common: &airflow-common
+# One image for Airflow *and* the Spark nodes below, built once and tagged.
+x-pipeline-image: &pipeline-image
   build:
     context: .
     dockerfile: docker/airflow/Dockerfile
+  image: insurance-pipeline:latest
+
+x-airflow-common: &airflow-common
+  <<: *pipeline-image
   environment: &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DEFAULT_TIMEZONE: utc
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    # local[*] unless overridden, e.g. SPARK_MASTER=spark://spark-master:7077
+    # together with `--profile cluster` (see the spark-* services below).
+    SPARK_MASTER: ${SPARK_MASTER:-local[*]}
+    # Fixed ports for the driver that runs inside each Airflow task, so the
+    # Spark workers know where to connect back to. SPARK_DRIVER_HOST is set
+    # per service, since it has to be that container's own hostname.
+    SPARK_DRIVER_PORT: "7078"
+    SPARK_BLOCK_MANAGER_PORT: "7079"
   volumes:
     - ./dags:/opt/airflow/dags
     - ./data:/opt/airflow/data:ro
@@ -43,21 +56,39 @@ services:
           --firstname admin --lastname admin \
           --role Admin --email admin@example.com
 
+  # depends_on here replaces (doesn't merge with) the anchor's, so postgres
+  # is implied via airflow-init. Bronze reads from mysql and mongo, so
+  # Airflow doesn't come up (and can't trigger a run) until both are seeded.
   airflow-webserver:
     <<: *airflow-common
     command: webserver
+    environment:
+      <<: *airflow-common-env
+      SPARK_DRIVER_HOST: airflow-webserver
     ports:
       - "8080:8080"
     depends_on:
       airflow-init:
         condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
 
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
+    # LocalExecutor runs every DAG task (and so every Spark driver) here.
+    environment:
+      <<: *airflow-common-env
+      SPARK_DRIVER_HOST: airflow-scheduler
     depends_on:
       airflow-init:
         condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
 
   mysql:
     image: mysql:8
@@ -68,10 +99,13 @@ services:
       - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./data/samples/mysql/policies.csv:/var/lib/mysql-files/policies.csv
     command: --secure-file-priv=/var/lib/mysql-files
+    # TCP (127.0.0.1), not the "localhost" socket: the image runs init.sql
+    # against a temporary server with networking disabled, which would
+    # already answer a socket ping before the seed load had finished.
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
       interval: 5s
-      retries: 10
+      retries: 60
 
   mongo:
     image: mongo:6
@@ -80,6 +114,12 @@ services:
     volumes:
       - ./docker/mongo/init-mongo.sh:/docker-entrypoint-initdb.d/init-mongo.sh:ro
       - ./data/samples/mongodb/claims.json:/docker-entrypoint-initdb.d/claims.json:ro
+    # Healthy only once init-mongo.sh has finished importing (it writes a
+    # marker document as its last step).
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "insurance", "--eval", "quit(db.seed_status.countDocuments() > 0 ? 0 : 1)"]
+      interval: 5s
+      retries: 60
 
   clickhouse:
     image: clickhouse/clickhouse-server:24
@@ -93,8 +133,92 @@ services:
       interval: 5s
       retries: 10
 
+  # The ClickHouse driver ships with Metabase itself since v0.54, so no
+  # plugin jar is needed. Metabase's own application DB (users, questions,
+  # dashboards) is an H2 file on a named volume; scripts/setup_metabase.py
+  # rebuilds all of it from metabase_queries/ anyway.
+  metabase:
+    image: metabase/metabase:v0.58.36
+    ports:
+      - "3000:3000"
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+      JAVA_OPTS: -Xmx1g
+    volumes:
+      - metabase-data:/metabase-data
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:3000/api/health"]
+      interval: 10s
+      retries: 30
+
+  # --- Spark standalone cluster (only with `--profile cluster`) ------------
+  #
+  # Same image as Airflow: Spark here *is* the pyspark==3.5.3 package in
+  # /opt/pipeline-venv (its bin/spark-class and bundled jars), and Python is
+  # that venv's 3.11 — so master, workers and the driver inside the Airflow
+  # tasks run identical Spark and Python by construction. The driver also
+  # tells executors to start Python workers with its own interpreter path
+  # (/opt/pipeline-venv/bin/python), which therefore exists on every worker.
+  #
+  # Workers mount the warehouse volume and ./data at the same paths as the
+  # Airflow containers: executors read the accidents file and write Delta
+  # data files directly, the driver only writes the Delta commit log.
+  spark-master:
+    <<: *pipeline-image
+    profiles: [cluster]
+    hostname: spark-master
+    environment:
+      SPARK_HOME: /opt/pipeline-venv/lib/python3.11/site-packages/pyspark
+    entrypoint: ["/opt/pipeline-venv/bin/spark-class"]
+    command: ["org.apache.spark.deploy.master.Master", "--host", "spark-master", "--port", "7077", "--webui-port", "8080"]
+    ports:
+      - "8090:8080"
+
+  spark-worker-1: &spark-worker
+    <<: *pipeline-image
+    profiles: [cluster]
+    hostname: spark-worker-1
+    environment:
+      SPARK_HOME: /opt/pipeline-venv/lib/python3.11/site-packages/pyspark
+    entrypoint: ["/opt/pipeline-venv/bin/spark-class"]
+    command:
+      - org.apache.spark.deploy.worker.Worker
+      - spark://spark-master:7077
+      - --host
+      - spark-worker-1
+      - --cores
+      - "2"
+      - --memory
+      - 1536m
+      - --work-dir
+      - /tmp/spark-work
+    volumes:
+      - ./data:/opt/airflow/data:ro
+      - warehouse-data:/opt/airflow/warehouse
+    depends_on:
+      - spark-master
+
+  spark-worker-2:
+    <<: *spark-worker
+    hostname: spark-worker-2
+    command:
+      - org.apache.spark.deploy.worker.Worker
+      - spark://spark-master:7077
+      - --host
+      - spark-worker-2
+      - --cores
+      - "2"
+      - --memory
+      - 1536m
+      - --work-dir
+      - /tmp/spark-work
+
 volumes:
   postgres-db-volume:
   airflow-logs:
   warehouse-data:
   clickhouse-data:
+  metabase-data:

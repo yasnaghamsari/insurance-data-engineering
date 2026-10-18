@@ -1,7 +1,8 @@
-"""Local SparkSession construction.
+"""SparkSession construction.
 
 The local CLI, Airflow tasks, and pytest all build their SparkSession here,
-with Delta Lake configured.
+with Delta Lake configured. The session runs in local mode unless
+``SPARK_MASTER`` points at a standalone cluster (see ``cluster_spark_conf``).
 """
 
 from __future__ import annotations
@@ -13,6 +14,40 @@ from pathlib import Path
 from pyspark.sql import SparkSession
 
 from insurance_pipeline.config import PipelineConfig
+
+MYSQL_JDBC_PACKAGE = "com.mysql:mysql-connector-j:8.4.0"
+
+
+def extra_spark_packages(cfg: PipelineConfig) -> list[str]:
+    """Maven packages needed beyond Delta Lake. The MySQL JDBC driver is only
+    pulled in when Bronze actually reads from MySQL, so file-mode runs (tests,
+    CI) don't need to download it."""
+    return [MYSQL_JDBC_PACKAGE] if cfg.source_mode == "databases" else []
+
+
+def cluster_spark_conf(cfg: PipelineConfig) -> dict[str, str]:
+    """Settings only needed when executors run outside the driver's process.
+
+    On a standalone cluster, executors open connections *back* to the driver
+    (task results, broadcasts, shuffle metadata), so the driver has to
+    advertise a hostname they can resolve (``spark.driver.host``) while
+    listening on every interface of its own container
+    (``spark.driver.bindAddress``), on fixed ports rather than random ones.
+    Empty in local mode, where everything stays inside one JVM.
+    """
+    if cfg.is_local_spark:
+        return {}
+    conf = {
+        "spark.driver.bindAddress": "0.0.0.0",
+        "spark.executor.memory": cfg.spark_executor_memory,
+    }
+    if cfg.spark_driver_host:
+        conf["spark.driver.host"] = cfg.spark_driver_host
+    if cfg.spark_driver_port:
+        conf["spark.driver.port"] = cfg.spark_driver_port
+    if cfg.spark_block_manager_port:
+        conf["spark.blockManager.port"] = cfg.spark_block_manager_port
+    return conf
 
 
 def get_local_spark_session(cfg: PipelineConfig, app_name: str = "insurance-pipeline") -> SparkSession:
@@ -56,15 +91,21 @@ def get_local_spark_session(cfg: PipelineConfig, app_name: str = "insurance-pipe
         # null for, not a crash.
         .config("spark.sql.legacy.timeParserPolicy", "CORRECTED")
         .enableHiveSupport()
-        .master("local[*]")
+        .master(cfg.spark_master)
     )
+    for key, value in cluster_spark_conf(cfg).items():
+        builder = builder.config(key, value)
 
+    packages = extra_spark_packages(cfg)
     try:
         from delta import configure_spark_with_delta_pip
 
-        builder = configure_spark_with_delta_pip(builder)
+        # Sets spark.jars.packages itself, so extra packages have to go
+        # through it rather than a separate .config() call it would overwrite.
+        builder = configure_spark_with_delta_pip(builder, extra_packages=packages)
     except ImportError:
         # delta-spark not installed (e.g. lightweight lint-only environments).
-        pass
+        if packages:
+            builder = builder.config("spark.jars.packages", ",".join(packages))
 
     return builder.getOrCreate()

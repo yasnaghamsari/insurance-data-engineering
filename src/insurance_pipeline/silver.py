@@ -12,8 +12,14 @@ from functools import reduce
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 from insurance_pipeline.config import PipelineConfig
+
+# Minimum US driving age; anything below it in driver.age is a placeholder.
+MIN_DRIVER_AGE = 16
+# The source system's "unknown licence date" placeholder.
+LICENSE_DATE_SENTINEL = "01-01-1900"
 
 
 def load_schema(path: str) -> list[dict]:
@@ -77,16 +83,25 @@ def transform_claims(claims_df: DataFrame) -> DataFrame:
         F.col("ingestion_timestamp"),
     )
 
+    # The source system fills unknown values with sentinels rather than
+    # leaving them empty: driver.age == 0 (888 of the 5,627 sample claims)
+    # and driver.license_issue_date == "01-01-1900" (2,736 claims). Left
+    # in, they'd drag average_driver_age down and read as 116-year-old
+    # licences, so both become null. Any age under 16 (the minimum US
+    # driving age) is treated the same way — on the sample data that only
+    # adds 2 claims beyond the zeros.
     silver_claims_df = (
         silver_claims_df.withColumn("claim_datetime", F.to_timestamp("claim_datetime", "yyyy-MM-dd HH:mm:ss"))
         .withColumn("incident_date", F.to_date("incident_date", "dd-MM-yyyy"))
         .withColumn(
             "license_issue_date",
             F.when(
-                F.col("license_issue_date").rlike("^[0-9]{2}-[0-9]{2}-[0-9]{4}$"),
+                F.col("license_issue_date").rlike("^[0-9]{2}-[0-9]{2}-[0-9]{4}$")
+                & (F.col("license_issue_date") != LICENSE_DATE_SENTINEL),
                 F.to_date("license_issue_date", "dd-MM-yyyy"),
             ),
         )
+        .withColumn("driver_age", F.when(F.col("driver_age") >= MIN_DRIVER_AGE, F.col("driver_age")))
     )
 
     silver_claims_df = silver_claims_df.withColumn(
@@ -97,9 +112,43 @@ def transform_claims(claims_df: DataFrame) -> DataFrame:
     silver_claims_df = require_non_null(
         silver_claims_df,
         ["claim_number", "policy_number", "incident_date"],
-    ).filter(F.col("incident_hour").between(0, 24))
+    ).filter(F.col("incident_hour").between(0, 23))
 
     return silver_claims_df
+
+
+def deduplicate_policies(policies_df: DataFrame) -> DataFrame:
+    """Keep exactly one row per ``policy_number``.
+
+    The raw feed repeats 7 policy numbers (14 rows). Most are exact
+    copies; the rest disagree on expiry date, premium or body type. Without
+    this, every claim on one of those policies would fan out into one row
+    per copy in the claims-to-policies join and be counted twice.
+
+    Rule: keep the row with the latest ``issue_date`` (the most recent
+    version of the policy), then the latest ``expiry_date``, then the
+    highest ``premium`` and ``sum_insured``. Any remaining tie is broken by
+    sorting on every other column, so the row kept never depends on how
+    Spark happened to partition the input.
+    """
+    priority = [
+        F.col("issue_date").desc_nulls_last(),
+        F.col("expiry_date").desc_nulls_last(),
+        F.col("premium").desc_nulls_last(),
+        F.col("sum_insured").desc_nulls_last(),
+    ]
+    prioritized = {"policy_number", "issue_date", "expiry_date", "premium", "sum_insured"}
+    tie_breakers = [
+        F.col(c).asc_nulls_last()
+        for c in sorted(policies_df.columns)
+        if c not in prioritized and c != "ingestion_timestamp"
+    ]
+    window = Window.partitionBy("policy_number").orderBy(*priority, *tie_breakers)
+    return (
+        policies_df.withColumn("_row_number", F.row_number().over(window))
+        .filter(F.col("_row_number") == 1)
+        .drop("_row_number")
+    )
 
 
 def transform_policies(policies_df: DataFrame, policies_schema: list[dict]) -> DataFrame:
@@ -117,17 +166,27 @@ def transform_policies(policies_df: DataFrame, policies_schema: list[dict]) -> D
     for date_col in ("issue_date", "effective_date", "expiry_date", "driver_dob"):
         policies_df = policies_df.withColumn(date_col, F.to_date(F.col(date_col), "dd-MM-yyyy"))
 
+    # sum_insured is deliberately not required: it's null on 112,696 of the
+    # 227,484 raw rows (49.5%), so requiring it would silently drop half
+    # the book, and every policy's premium with it. Gold's exposure sums
+    # simply skip the nulls.
     policies_df = require_non_null(
         policies_df,
-        ["customer_id", "policy_number", "issue_date", "premium", "sum_insured"],
+        ["customer_id", "policy_number", "issue_date", "premium"],
     )
 
-    # The raw feed has a handful of rows with a negative premium (or
-    # sum_insured), which is nonsensical for an insurance policy. Silver's
-    # job is to clean these out rather than let them reach Gold aggregates.
-    policies_df = policies_df.filter((F.col("premium") >= 0) & (F.col("sum_insured") >= 0))
+    # 10,199 raw rows have a negative premium, which isn't a valid written
+    # premium for a policy (none have a negative sum_insured on the sample
+    # data, but the same rule applies). These are dropped rather than let
+    # into Gold aggregates. A null sum_insured is allowed; a negative one
+    # is not.
+    policies_df = policies_df.filter(
+        (F.col("premium") >= 0) & (F.col("sum_insured").isNull() | (F.col("sum_insured") >= 0))
+    )
 
-    return policies_df
+    # Deduplicate after the validity filters, so an invalid copy of a
+    # policy can never be the one kept (and then dropped, losing the key).
+    return deduplicate_policies(policies_df)
 
 
 def transform_accidents(accidents_df: DataFrame, accidents_schema: list[dict]) -> DataFrame:
@@ -152,7 +211,7 @@ def transform_accidents(accidents_df: DataFrame, accidents_schema: list[dict]) -
         ["accident_date", "collision_id", "latitude", "longitude"],
     )
 
-    # The raw feed has a handful of rows with a latitude/longitude outside
+    # 104 rows of the 1.6M-row raw feed have a latitude/longitude outside
     # valid Earth coordinates (e.g. longitude beyond +/-180), which is
     # corrupted data rather than a real location. Silver's job is to clean
     # these out rather than let them reach Gold aggregates.
