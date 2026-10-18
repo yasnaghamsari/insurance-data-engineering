@@ -11,6 +11,12 @@ the same code runs on a laptop, in Docker Compose/Airflow, and in CI.
   same data.
 
 Accidents are always read from a local file (see ``accidents_csv_path``).
+
+``SPARK_MASTER`` picks where Spark runs: ``local[*]`` (default; tests, CI, local dev) or a
+standalone cluster URL such as ``spark://spark-master:7077`` (Docker Compose's ``cluster``
+profile). On a cluster, executors connect back to the driver, so ``SPARK_DRIVER_HOST`` must be
+a hostname they can resolve and ``SPARK_DRIVER_PORT``/``SPARK_BLOCK_MANAGER_PORT`` pin the
+ports they connect to.
 """
 
 from __future__ import annotations
@@ -47,6 +53,14 @@ class PipelineConfig:
 
     source_mode: str = field(default_factory=lambda: os.environ.get("SOURCE_MODE", "files"))
 
+    spark_master: str = field(default_factory=lambda: os.environ.get("SPARK_MASTER", "local[*]"))
+    spark_driver_host: str = field(default_factory=lambda: os.environ.get("SPARK_DRIVER_HOST", ""))
+    spark_driver_port: str = field(default_factory=lambda: os.environ.get("SPARK_DRIVER_PORT", ""))
+    spark_block_manager_port: str = field(
+        default_factory=lambda: os.environ.get("SPARK_BLOCK_MANAGER_PORT", "")
+    )
+    spark_executor_memory: str = field(default_factory=lambda: os.environ.get("SPARK_EXECUTOR_MEMORY", "1g"))
+
     mysql_host: str = field(default_factory=lambda: os.environ.get("MYSQL_HOST", "localhost"))
     mysql_port: int = field(default_factory=lambda: int(os.environ.get("MYSQL_PORT", "3306")))
     mysql_user: str = field(default_factory=lambda: os.environ.get("MYSQL_USER", "root"))
@@ -73,6 +87,10 @@ class PipelineConfig:
     def __post_init__(self) -> None:
         if self.source_mode not in SOURCE_MODES:
             raise ValueError(f"SOURCE_MODE must be one of {SOURCE_MODES}, got {self.source_mode!r}")
+
+    @property
+    def is_local_spark(self) -> bool:
+        return self.spark_master.startswith("local")
 
     @property
     def mysql_jdbc_url(self) -> str:
