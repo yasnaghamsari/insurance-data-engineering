@@ -1,8 +1,6 @@
 """Environment-driven configuration.
 
-Every path/connection detail that used to be hardcoded inline in the Databricks
-notebooks (e.g. ``/Workspace/Users/<someone>/insurance-claims/data/...``) lives
-here instead, read from environment variables with sensible local defaults so
+Every path/connection detail is read from environment variables with sensible local defaults so
 the same code runs on a laptop, in Docker Compose/Airflow, and in CI.
 """
 

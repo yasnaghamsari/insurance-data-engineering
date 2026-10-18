@@ -1,7 +1,8 @@
 """Bronze layer: raw ingestion with minimal processing.
 
-Ported from the original Databricks notebook cells. Behavior is unchanged;
-only the hardcoded workspace paths were replaced with :class:`PipelineConfig`.
+Reads each raw source file as-is, drops internal ``_``-prefixed columns, stamps
+``ingestion_timestamp``, and writes the ``bronze_*`` Delta tables. All paths come
+from :class:`PipelineConfig`.
 """
 
 from __future__ import annotations

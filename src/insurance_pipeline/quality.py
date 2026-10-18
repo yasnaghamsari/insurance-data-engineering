@@ -1,7 +1,7 @@
 """Data-quality gate between Silver and Gold, using Great Expectations.
 
-This replaces the ad hoc ``require_non_null`` filter (which just silently
-drops bad rows) with an explicit, reportable set of expectations per table.
+Complements Silver's ``require_non_null`` filter (which just drops bad rows)
+with an explicit, reportable set of expectations per table.
 A failed critical expectation raises :class:`DataQualityError`, which fails
 the Airflow task instead of letting bad data flow silently into Gold.
 """

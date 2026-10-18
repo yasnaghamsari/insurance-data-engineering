@@ -1,36 +1,13 @@
 """Gold layer: business-ready aggregations.
 
-Ported from the original Databricks notebook and cleaned up in the process (the original
-notebook had grown some copy/paste debris from iterative editing):
+Daily/weekly/monthly claims and accidents aggregates, monthly policies, and
+the claims-to-policies joins behind ``gold_loss_ratio_monthly``,
+``gold_vehicle_body_risk``, and ``gold_vehicle_usage_risk`` (incurred claims
+vs. earned premium, attributed to the vehicle each claim was written against).
 
-- ``gold_claims_daily`` is now actually written. The original notebook computed
-  ``daily_claims`` (with pct-change/rolling-avg columns) but never called
-  ``saveAsTable`` on it, even though the README documents the table as existing.
-- ``accident_hour`` is now derived once in the Silver layer
-  (:func:`insurance_pipeline.silver.transform_accidents`) instead of being
-  recomputed ad hoc partway through this notebook.
-- The daily accident aggregation had two conflicting definitions in the
-  original notebook (one with trend columns that was immediately discarded,
-  one without that actually got written). This keeps the trend columns, to
-  match the weekly/monthly accident aggregations, which both already had them
-  — but drops that discarded version's ``75_pctl_number_of_vehicles_involved``
-  column, which referenced a ``number_of_vehicles_involved`` field that
-  doesn't exist anywhere in the accidents schema (it's a claims/collision
-  field); that's almost certainly *why* the block got discarded originally.
-- ``most_common_borough``/``most_common_zip_code`` were computed with
-  ``F.max()``, which is the alphabetically/numerically largest value, not
-  the most frequent one — a borough that appears once could "win" over one
-  that appears 500 times just by sorting later. ``_modes_per_group()`` does
-  an actual per-group frequency count instead.
-- ``build_monthly_policies`` joined issued/expired policies with a left
-  join, which would silently drop any month that only had expirations and
-  no new issuances. Now a full outer join.
-
-``gold_loss_ratio_monthly``, ``gold_vehicle_body_risk``, and
-``gold_vehicle_usage_risk`` are new tables, not a port from the original
-notebook: nothing previously joined claims to policies, so there was no real
-loss ratio (incurred claims / earned premium) anywhere, and no way to
-attribute a claim to the vehicle it was written against.
+Every time-series table follows the same shape: groupBy -> agg -> window-based
+trend columns (``lag`` for pct-change, ``rowsBetween`` for rolling averages).
+``accident_hour`` is derived in Silver, not here.
 """
 
 from __future__ import annotations
@@ -60,7 +37,7 @@ def _modes_per_group(df: DataFrame, group_col: str, value_cols: list[str]) -> Da
     """One row per ``group_col`` value, with each of ``value_cols`` replaced by
     its most frequent non-null (mode) value within that group.
 
-    ``F.max()`` on a raw column (the original approach) returns the
+    ``F.max()`` on a raw column would return the
     alphabetically/numerically largest value, not the most common one —
     e.g. a borough that appears once would beat one that appears 500 times
     if its name happens to sort later. This does an actual per-group,

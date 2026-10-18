@@ -27,9 +27,7 @@ def test_run_gold_writes_all_tables(spark, gold_tables):
 
 
 def test_gold_claims_daily_is_actually_written(spark, gold_tables):
-    # Regression test: the original notebook computed daily_claims but never
-    # called saveAsTable on it, even though the README documents
-    # gold_claims_daily as an output. Guard against that regressing again.
+    # gold_claims_daily is a documented output with trend columns.
     df = spark.table("gold_claims_daily")
     assert "pct_change_number_of_claims" in df.columns
     assert "30d_rolling_avg_total_claim_amount" in df.columns
@@ -67,8 +65,8 @@ def test_build_daily_claims_aggregates_and_computes_trend_columns(spark):
 
 
 def test_build_daily_accidents_picks_most_frequent_borough_not_max(spark):
-    # "Manhattan" sorts after "Bronx" alphabetically, so F.max() (the
-    # original, buggy approach) would incorrectly pick it even though
+    # "Manhattan" sorts after "Bronx" alphabetically, so F.max() would
+    # incorrectly pick it even though
     # "Bronx" is the actually most frequent borough on this date.
     df = spark.createDataFrame(
         [

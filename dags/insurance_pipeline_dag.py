@@ -1,5 +1,5 @@
 """Orchestrates the Bronze -> Silver -> data quality -> Gold -> ClickHouse
-pipeline that used to be three Databricks notebooks run by hand.
+pipeline.
 
 Each task shells out to the dedicated pipeline virtualenv baked into the
 Airflow image (see docker/airflow/Dockerfile) rather than importing

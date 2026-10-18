@@ -1,6 +1,6 @@
 """Silver layer: cleaning and standardization.
 
-Ported from the original Databricks notebook. Each dataset follows the same pattern:
+Each dataset follows the same pattern:
 read the Bronze table, standardize names/types, add derived fields, apply
 data-quality filters, write the Silver Delta table.
 """
@@ -107,14 +107,13 @@ def transform_policies(policies_df: DataFrame, policies_schema: list[dict]) -> D
     # rename_from_schema only renames columns; it doesn't apply the "type"/
     # "format" the schema JSON declares for issue_date/effective_date/
     # expiry_date (dd-MM-yyyy strings), so without this they're left as
-    # plain strings. That's a silent bug: every date-based Gold aggregation
-    # (F.year(issue_date), etc.) would just get null for every row.
+    # plain strings and every date-based Gold aggregation
+    # (F.year(issue_date), etc.) would get null for every row.
     #
     # to_date() already returns null for a malformed string rather than
     # raising (Spark only throws on this under ANSI mode, which isn't
-    # enabled here) so it's a portable stand-in for try_to_date(), a
-    # Databricks SQL function not present in open-source Spark's function
-    # registry.
+    # enabled here) so no try_to_date() is needed (that function isn't in
+    # open-source Spark's function registry anyway).
     for date_col in ("issue_date", "effective_date", "expiry_date", "driver_dob"):
         policies_df = policies_df.withColumn(date_col, F.to_date(F.col(date_col), "dd-MM-yyyy"))
 
