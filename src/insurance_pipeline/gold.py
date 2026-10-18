@@ -251,7 +251,9 @@ def build_monthly_policies(silver_policies: DataFrame) -> DataFrame:
             F.count("*").alias("policies_issued"),
             F.round(F.sum("sum_insured")).alias("exposure"),
             F.round(F.sum("premium")).alias("total_premium"),
-            F.round(F.avg("issue_age_of_vehicle")).alias("avg_issue_age_of_vehicle"),
+            # One decimal: the monthly average only moves by fractions of a
+            # year, so rounding to whole years turns the trend into steps.
+            F.round(F.avg("issue_age_of_vehicle"), 1).alias("avg_issue_age_of_vehicle"),
         )
     )
 

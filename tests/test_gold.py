@@ -7,6 +7,7 @@ from insurance_pipeline.gold import (
     build_daily_claims,
     build_monthly_claims,
     build_monthly_loss_ratio,
+    build_monthly_policies,
     build_vehicle_body_risk,
     build_weekly_claims,
 )
@@ -272,3 +273,30 @@ def test_build_daily_accidents_excludes_nulls_from_the_mode(spark):
 
     assert result["most_common_borough"] == "Queens"
     assert result["most_common_zip_code"] == 11101
+
+
+def test_build_monthly_policies_keeps_one_decimal_of_vehicle_age(spark):
+    d = datetime.date
+    df = spark.createDataFrame(
+        [
+            Row(
+                issue_date=d(2024, 1, 1),
+                expiry_date=d(2025, 1, 1),
+                model_year="2020",
+                sum_insured=1.0,
+                premium=1.0,
+            ),
+            Row(
+                issue_date=d(2024, 1, 2),
+                expiry_date=d(2025, 1, 2),
+                model_year="2021",
+                sum_insured=1.0,
+                premium=1.0,
+            ),
+        ]
+    )
+
+    row = build_monthly_policies(df).filter("year_month = '2024-01'").first()
+
+    # Ages 4 and 3 -> 3.5, not rounded to a whole year.
+    assert row["avg_issue_age_of_vehicle"] == 3.5
