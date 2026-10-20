@@ -13,9 +13,12 @@ The sample data is small (1.6M raw accidents, 227k policies, 5.6k claims), so a 
 
 All 14 Gold tables produced from the real sample data are **identical** before and after: same schema, same rows, same values, with no float tolerance needed. See [Gold outputs are unchanged](#gold-outputs-are-unchanged).
 
+The optimized code also completes every scale, x20 included, on the Docker Compose Spark cluster (2 workers × 2 cores): 134 s, 303 s, 417 s and 826 s. See [Cluster mode](#cluster-mode).
+
 - [How the scaled data is generated](#how-the-scaled-data-is-generated)
 - [Setup](#setup)
 - [Results](#results)
+- [Cluster mode](#cluster-mode)
 - [Where the time went (baseline)](#where-the-time-went-baseline)
 - [Optimizations that were kept](#optimizations-that-were-kept)
 - [Tried and not kept](#tried-and-not-kept)
@@ -58,7 +61,7 @@ As a result, Silver's dedup (7 duplicate policies per copy), the quality gate's 
 - **One process per run, cache cleared between steps:** in production each step is a separate Airflow task, i.e. a separate process. Clearing Spark's cache between steps keeps a single-process run honest about that (see [the Great Expectations cache](#3-great-expectations-validates-without-caching-the-table)).
 - **Event logging:** each run's Spark event log (`benchmark-runs/events/`) is enabled through a generated `spark-defaults.conf`, so the pipeline code doesn't need to know about it.
 - **Job labels:** the runner labels every Spark job `"<step> | <action> <table>"`, so `scripts/analyze_event_log.py` can attribute every stage, including schema-inference passes, to a step and a table.
-- **Cluster mode was not run.** The runner supports Docker Compose's `cluster` profile (`--mode cluster`, using `docker/benchmark/docker-compose.benchmark.yml`), and the image was already built. But the cluster needs ~6.5 GB on its own (2 workers × 1.5 GB, a 2 GB driver, the master), and this machine had 2–4 GB free. A first local attempt at x10 had already been killed for running out of memory, with Docker idle in the background. All numbers here are local mode; [Reproducing it](#reproducing-it) has the cluster commands.
+- **Cluster mode** ran separately, later the same day, once enough RAM was free (see [Cluster mode](#cluster-mode)). The cluster needs ~6.5 GB on its own (2 workers × 1.5 GB, a 2 GB driver, the master). That wasn't available while the local runs were going on, with only 2–4 GB free. Everything outside that section is local mode.
 
 ## Results
 
@@ -78,6 +81,34 @@ Seconds per step, local mode. Each **before**/**after** pair ran back to back, s
 Per step at x10: Bronze −25%, quality −83%, Gold −31%, Silver unchanged. At x20 the original code doesn't complete at all. Its quality step runs the 2 GB driver out of heap ([log excerpt](benchmark/before-x20-quality-oom.txt)). The automatic retry was stopped, since the failure is deterministic; it was clear from the first attempt. Why Silver doesn't move is explained in [Tried and not kept](#accidents-repartition--the-biggest-win-not-applied).
 
 Raw results for every run, including the one-change-at-a-time experiments, are in [`benchmark/results.csv`](benchmark/results.csv) and [`benchmark/results.json`](benchmark/results.json). The event-log summaries cited below are in [`benchmark/`](benchmark/).
+
+## Cluster mode
+
+The same optimized code (`--label after`), run with `--mode cluster` on Docker Compose's `cluster` profile. The cluster had one master and two workers, each worker giving 2 cores and a 1 GB executor, for **4 task slots** in total. The driver ran in the `benchmark-driver` container with a 2 GB heap. Docker's VM had 7.8 GB, of which 6.7 GB was available at the start. No other Compose services were running. The `before` code was not run on the cluster.
+
+| scale | bronze | silver | quality | gold | total | local (16 slots) | change |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| x1 | 40.6 | 51.1 | 15.4 | 27.1 | **134.1** | 153.4 | −13% |
+| x5 | 99.1 | 151.9 | 15.3 | 36.4 | **302.7** | 405.4 | −25% |
+| x10 | 173.2 | 181.0 | 16.3 | 46.1 | **416.6** | 564.5 | −26% |
+| x20 | 362.5 | 379.6 | 19.4 | 64.3 | **825.8** | 837.4 | −1% |
+
+**x20 completed on the first attempt, with no tuning.** It hit no out-of-memory error, no task was retried, and each worker container used about 2 GB in `docker stats` snapshots taken during the run. The scaling checks held at every scale: claims, accidents and policies issued were exactly N× the x1 numbers, the loss ratio stayed 84.97%, and Gold row counts matched the local runs.
+
+**Why 4 slots match or beat 16:** the run time is set by the stages that are one task long, not by how many slots there are. From the x10 and x20 event logs:
+
+| stage | local x10 | cluster x10 | local x20 | cluster x20 |
+|---|---:|---:|---:|---:|
+| bronze: write `bronze_accidents` (1 task, gzip) | 193.8 s | 138.5 s | 397.5 s | 305.5 s |
+| silver: write `silver_accidents` | 243.4 s | 160.0 s | 275.0 s (1 task did all of it) | 340.2 s (6 tasks, 2 waves) |
+
+- **The gzip read and the Bronze accidents write are a single task in both modes**, so extra slots can't help them. That one task ran ~25–30% faster on the cluster. The cluster is a Linux VM reading from a Docker volume; local mode is Windows reading from NTFS while the laptop was paging. The two sets of runs weren't interleaved, so this is a difference in conditions, not something the cluster itself buys.
+- **At x20, the Silver accidents write is where the cluster loses.** Local mode ran it as one 275 s task. The cluster split it into 6 tasks, but 6 tasks on 4 slots means two waves: four tasks at ~201 s, then the last two at 15 s and 139 s. That makes 340 s, enough to cancel out the cluster's Bronze advantage at x20.
+- **Startup took longer:** 10–11 s versus ~5 s locally, and 34 s at x20, while the executors registered with the master. Startup isn't part of the step times above.
+
+The `parallelism` column for cluster runs in `results.csv` reads **2**, not 4. The runner records `defaultParallelism` right after the session starts, before the executors have registered, and Spark reports its minimum of 2 until then. The event logs confirm two executors with 2 cores each.
+
+What this shows: the pipeline runs correctly on a real multi-process cluster with executors on other hosts, at every scale, without changing any code. It also shows that **adding slots won't speed it up much until the single-task accidents path is fixed**; see [Tried and not kept](#accidents-repartition--the-biggest-win-not-applied).
 
 ## Where the time went (baseline)
 
@@ -228,10 +259,9 @@ python scripts/compare_gold.py compare benchmark-runs/gold-snapshots/before benc
 
 ```bash
 docker compose build                       # the insurance-pipeline image
-python scripts/benchmark.py run --mode cluster --scales 5 10 --label before --src benchmark-runs/baseline-src/src
-python scripts/benchmark.py run --mode cluster --scales 5 10 --label after
+python scripts/benchmark.py run --mode cluster --scales 1 5 10 20 --label after
 ```
 
-**This cluster path is implemented but was not exercised for this write-up** (see [Setup](#setup)); `docker compose ... config` validates the overlay, but no cluster run has been timed. It starts `spark-master` and both workers with the overlay `docker/benchmark/docker-compose.benchmark.yml`. The overlay leaves `docker-compose.yml` unchanged and adds a `benchmark-driver` container plus two volumes, `benchmark-data` and `benchmark-warehouse`. The runner copies the scaled data into `benchmark-data`, so reads don't go through Docker Desktop's Windows file sharing. It mounts the chosen `--src` over the image's editable install, so before/after need no image rebuild.
+On a slow or flaky connection (e.g. through a VPN), the image build's `apt-get update` can fail with `Connection failed` on `deb.debian.org`; just rerun the build. The runner starts only `spark-master` and both workers, using the overlay `docker/benchmark/docker-compose.benchmark.yml`. The overlay leaves `docker-compose.yml` unchanged and adds a `benchmark-driver` container plus two volumes, `benchmark-data` and `benchmark-warehouse`. The runner copies the scaled data into `benchmark-data`, so reads don't go through Docker Desktop's Windows file sharing. It mounts the chosen `--src` over the image's editable install, so before/after need no image rebuild.
 
 Scratch output (warehouses, event logs, Gold snapshots) goes to `benchmark-runs/`, which is git-ignored like `data/benchmark/`.
