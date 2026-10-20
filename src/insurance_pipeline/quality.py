@@ -31,7 +31,11 @@ def validate_dataframe(
     spark: SparkSession, df: DataFrame, table_name: str, expectations: list
 ) -> TableCheckResult:
     context = gx.get_context(mode="ephemeral")
-    data_source = context.data_sources.add_spark(f"{table_name}_source")
+    # persist=False: by default Great Expectations caches the whole DataFrame
+    # (every column) before computing its metrics, and never releases it.
+    # The expectations here only touch a few columns each, which Spark can
+    # read straight from the Silver table's Parquet files instead.
+    data_source = context.data_sources.add_spark(f"{table_name}_source", persist=False)
     data_asset = data_source.add_dataframe_asset(name=f"{table_name}_asset")
     batch_definition = data_asset.add_batch_definition_whole_dataframe(f"{table_name}_batch")
     batch = batch_definition.get_batch(batch_parameters={"dataframe": df})

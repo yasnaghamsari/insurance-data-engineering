@@ -272,10 +272,14 @@ def build_accidents_by_weekday_hour(silver_accidents: DataFrame) -> DataFrame:
         .groupBy("weekday_number", "accident_hour")
         .agg(F.count("*").alias("number_of_accidents"))
     )
-    grid = spark.createDataFrame(
-        [(i + 1, name, hour) for i, name in enumerate(WEEKDAY_NAMES) for hour in range(24)],
-        "weekday_number int, weekday string, accident_hour int",
+    # An inline VALUES table, so the 168 grid rows are built inside the JVM.
+    # spark.createDataFrame() on a Python list would ship them through a
+    # Python worker process instead, and starting that worker was the single
+    # slowest thing in this table (~10s per run; see docs/benchmark.md).
+    values = ", ".join(
+        f"({i + 1}, '{name}', {hour})" for i, name in enumerate(WEEKDAY_NAMES) for hour in range(24)
     )
+    grid = spark.sql(f"SELECT * FROM VALUES {values} AS grid(weekday_number, weekday, accident_hour)")
     return (
         grid.join(counts, on=["weekday_number", "accident_hour"], how="left")
         .fillna(0, ["number_of_accidents"])

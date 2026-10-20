@@ -1,0 +1,20 @@
+# Original code (c1841fa) at x20, local mode: excerpt from the benchmark run log
+# Bronze and Silver completed; the quality step ran out of driver heap while Great Expectations
+# cached silver_accidents (32M rows) and reported the failed metric jobs as failed expectations.
+
+[before-local-x20-r1-20261020T095406Z]
+  bronze: 592.7s
+  silver: 297.4s
+26/10/20 13:39:50 WARN MemoryStore: Not enough space to cache rdd_342_1 in memory! (computed 169.7 MiB so far)
+26/10/20 13:40:01 WARN MemoryStore: Not enough space to cache rdd_342_7 in memory! (computed 219.3 MiB so far)
+26/10/20 13:40:01 WARN MemoryStore: Not enough space to cache rdd_342_10 in memory! (computed 220.8 MiB so far)
+java.lang.OutOfMemoryError: Java heap space
+java.lang.OutOfMemoryError: Java heap space
+Exception in thread "Spark Context Cleaner" java.lang.OutOfMemoryError: Java heap space
+ org.apache.logging.log4j.core.appender.AppenderLoggingException: java.lang.OutOfMemoryError: Java heap space
+Caused by: java.lang.OutOfMemoryError: Java heap space
+Exception in thread "stop-spark-context" java.lang.OutOfMemoryError: Java heap space
+26/10/20 13:50:30 ERROR Executor: Exception in task 13.0 in stage 115.0 (TID 775): Java heap space
+    raise DataQualityError(f"Data quality checks failed for: {details}")
+insurance_pipeline.quality.DataQualityError: Data quality checks failed for: silver_accidents: ['expect_column_values_to_not_be_null', 'expect_column_values_to_not_be_null', 'expect_column_values_to_be_between', 'expect_
+  run failed (attempt 1); retrying in 60s

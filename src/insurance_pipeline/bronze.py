@@ -18,6 +18,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import current_timestamp
 
 from insurance_pipeline.config import PipelineConfig
+from insurance_pipeline.source_schemas import ACCIDENTS_SCHEMA, CLAIMS_SCHEMA, POLICIES_SCHEMA
 
 LAYER = "bronze"
 
@@ -30,7 +31,11 @@ def _finalize_raw(df: DataFrame) -> DataFrame:
 
 
 def ingest_raw_data(
-    spark: SparkSession, path: str, file_format: str = "csv", multiline: bool = False
+    spark: SparkSession,
+    path: str,
+    file_format: str = "csv",
+    multiline: bool = False,
+    schema: str | None = None,
 ) -> DataFrame:
     """Load raw source data into Bronze layer.
 
@@ -44,6 +49,9 @@ def ingest_raw_data(
     multiline : bool
         Allow quoted CSV fields to span lines. Off by default, since it stops
         Spark from splitting the file across tasks.
+    schema : str, optional
+        DDL schema to read with. Without one, Spark infers the schema, which
+        costs an extra full pass over the file before the actual read.
 
     Returns
     -------
@@ -51,15 +59,16 @@ def ingest_raw_data(
         Ingested raw dataframe with technical columns removed and an
         ``ingestion_timestamp`` column added.
     """
+    reader = spark.read.schema(schema) if schema else spark.read
     if file_format == "csv":
         df = (
-            spark.read.option("header", True)
-            .option("inferSchema", True)
+            reader.option("header", True)
+            .option("inferSchema", schema is None)
             .option("multiLine", multiline)
             .csv(path)
         )
     elif file_format == "json":
-        df = spark.read.json(path)
+        df = reader.option("multiline", multiline).json(path)
     else:
         raise ValueError("Unsupported file format")
 
@@ -83,7 +92,9 @@ def ingest_policies(spark: SparkSession, cfg: PipelineConfig) -> DataFrame:
     # newline. Without multiline, Spark splits each into two broken rows that
     # Silver then drops, while MySQL's LOAD DATA (databases mode) reads them
     # correctly.
-    return ingest_raw_data(spark, cfg.policies_csv_path, file_format="csv", multiline=True)
+    return ingest_raw_data(
+        spark, cfg.policies_csv_path, file_format="csv", multiline=True, schema=POLICIES_SCHEMA
+    )
 
 
 def fetch_mongo_claims(cfg: PipelineConfig) -> list[str]:
@@ -113,21 +124,39 @@ def claims_from_json_documents(spark: SparkSession, documents: list[str]) -> Dat
 
 def ingest_claims(spark: SparkSession, cfg: PipelineConfig) -> DataFrame:
     if cfg.source_mode == "databases":
-        df = claims_from_json_documents(spark, fetch_mongo_claims(cfg))
-    else:
-        df = spark.read.option("multiline", True).json(cfg.claims_json_path)
-    return _finalize_raw(df)
+        return _finalize_raw(claims_from_json_documents(spark, fetch_mongo_claims(cfg)))
+    return ingest_raw_data(
+        spark, cfg.claims_json_path, file_format="json", multiline=True, schema=CLAIMS_SCHEMA
+    )
 
 
 def ingest_accidents(spark: SparkSession, cfg: PipelineConfig) -> DataFrame:
-    return ingest_raw_data(spark, cfg.accidents_csv_path, file_format="csv")
+    return ingest_raw_data(spark, cfg.accidents_csv_path, file_format="csv", schema=ACCIDENTS_SCHEMA)
+
+
+def spread_across_cores(spark: SparkSession, df: DataFrame) -> DataFrame:
+    """Round-robin ``df`` into one partition per core before it's written.
+
+    The policies CSV is read with ``multiLine``, which Spark can't split, so
+    it arrives as one partition and would otherwise be written by one task
+    as one Parquet file — leaving Silver's policy transform and dedup, and
+    the quality checks, to read it on a single core.
+
+    Deliberately *not* applied to accidents (a gzipped CSV, also read as one
+    partition), even though it measured as the bigger win: Gold's
+    ``most_common_borough``/``most_common_zip_code`` pick an arbitrary row
+    when two values tie, and which one depends on how the accident rows are
+    laid out across partitions, so spreading them changed 35 of those values
+    on the sample data. See docs/benchmark.md.
+    """
+    return df.repartition(spark.sparkContext.defaultParallelism)
 
 
 def run_bronze(spark: SparkSession, cfg: PipelineConfig) -> None:
     """Ingest all three sources and write ``bronze_*`` Delta tables."""
 
     (
-        ingest_policies(spark, cfg)
+        spread_across_cores(spark, ingest_policies(spark, cfg))
         .write.format("delta")
         .mode("overwrite")
         .option("overwriteSchema", True)
