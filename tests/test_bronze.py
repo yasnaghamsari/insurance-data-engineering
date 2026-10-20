@@ -7,6 +7,7 @@ import pytest
 from insurance_pipeline import bronze
 from insurance_pipeline.bronze import ingest_raw_data
 from insurance_pipeline.config import PipelineConfig
+from insurance_pipeline.source_schemas import ACCIDENTS_SCHEMA, CLAIMS_SCHEMA, POLICIES_SCHEMA
 from insurance_pipeline.spark_utils import MYSQL_JDBC_PACKAGE, extra_spark_packages
 
 
@@ -117,3 +118,31 @@ def test_databases_mode_claims_match_files_mode(spark, cfg, monkeypatch, tmp_pat
     from_mongo = from_mongo.drop("ingestion_timestamp")
     assert from_mongo.schema == from_files.schema
     assert sorted(from_mongo.collect()) == sorted(from_files.collect())
+
+
+@pytest.mark.parametrize(
+    "path_attr, file_format, multiline, schema",
+    [
+        ("policies_csv_path", "csv", True, POLICIES_SCHEMA),
+        ("claims_json_path", "json", True, CLAIMS_SCHEMA),
+        ("accidents_csv_path", "csv", False, ACCIDENTS_SCHEMA),
+    ],
+)
+def test_explicit_bronze_schemas_equal_what_spark_infers(
+    spark, cfg, path_attr, file_format, multiline, schema
+):
+    # Bronze reads with these instead of inferring (one less pass over each
+    # file). If the source data changes shape, this fails rather than the
+    # explicit schema silently turning unparseable values into nulls.
+    path = getattr(cfg, path_attr)
+    if file_format == "csv":
+        inferred = (
+            spark.read.option("header", True)
+            .option("inferSchema", True)
+            .option("multiLine", multiline)
+            .csv(path)
+        )
+    else:
+        inferred = spark.read.option("multiline", multiline).json(path)
+    explicit = ingest_raw_data(spark, path, file_format=file_format, multiline=multiline, schema=schema)
+    assert explicit.drop("ingestion_timestamp").schema == inferred.schema

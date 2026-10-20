@@ -1,0 +1,59 @@
+# Overlay for scripts/benchmark.py --mode cluster. Not used by the normal stack.
+#
+#   docker compose -f docker-compose.yml -f docker/benchmark/docker-compose.benchmark.yml \
+#     --profile cluster up -d spark-master spark-worker-1 spark-worker-2
+#
+# Adds a benchmark-driver container (the Spark driver, same image as Airflow)
+# and two named volumes shared by the driver and both workers, mounted at the
+# same paths everywhere:
+#
+# - benchmark-data: the scaled inputs, copied in from ./data/benchmark once.
+#   Reading them straight off the ./data bind mount would go through Docker
+#   Desktop's Windows file sharing, which would make the benchmark measure
+#   that rather than Spark.
+# - benchmark-warehouse: the benchmark's own Delta warehouse, so a benchmark
+#   run never touches the real warehouse-data volume.
+#
+# PIPELINE_SRC (default ./src) is mounted over the image's editable install,
+# so the benchmark can run the baseline and the optimized code against the
+# same image without a rebuild.
+
+x-benchmark-mounts: &benchmark-mounts
+  - ./data:/opt/airflow/data:ro
+  - benchmark-data:/benchmark-data
+  - benchmark-warehouse:/benchmark-warehouse
+  - ${PIPELINE_SRC:-./src}:/opt/project/src:ro
+
+services:
+  spark-worker-1:
+    volumes: *benchmark-mounts
+
+  spark-worker-2:
+    volumes: *benchmark-mounts
+
+  benchmark-driver:
+    image: insurance-pipeline:latest
+    profiles: [cluster]
+    hostname: benchmark-driver
+    environment:
+      SPARK_MASTER: spark://spark-master:7077
+      SPARK_DRIVER_HOST: benchmark-driver
+      SPARK_DRIVER_PORT: "7078"
+      SPARK_BLOCK_MANAGER_PORT: "7079"
+      SOURCE_MODE: files
+      SCHEMA_ROOT: /opt/airflow/data/schemas
+      PYTHONPATH: /opt/project/src
+    volumes:
+      - ./data:/opt/airflow/data:ro
+      - benchmark-data:/benchmark-data
+      - benchmark-warehouse:/benchmark-warehouse
+      - ${PIPELINE_SRC:-./src}:/opt/project/src:ro
+      - ./scripts:/opt/benchmark/scripts:ro
+      - ./benchmark-runs:/opt/benchmark/runs
+    entrypoint: ["/opt/pipeline-venv/bin/python"]
+    depends_on:
+      - spark-master
+
+volumes:
+  benchmark-data:
+  benchmark-warehouse:

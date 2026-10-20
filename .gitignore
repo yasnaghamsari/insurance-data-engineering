@@ -34,3 +34,7 @@ Thumbs.db
 
 # Claude Code
 CLAUDE.md
+
+# Spark scale benchmark (scripts/scale_data.py, scripts/benchmark.py)
+data/benchmark/
+benchmark-runs/
