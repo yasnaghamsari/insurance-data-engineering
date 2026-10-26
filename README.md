@@ -134,7 +134,7 @@ The baseline's biggest costs all traced back to the gzipped accidents file. gzip
 | x10 | 723 s | 565 s (−22%) |
 | x20 | fails (out of memory in the quality step) | 837 s |
 
-The optimized code also runs at every scale on the Docker Compose Spark cluster (2 workers × 2 cores), including x20 in 826 s. Most of the time goes to single-task stages on the gzipped accidents file, so 4 cluster slots match 16 local ones.
+The optimized code also runs at every scale on the Docker Compose Spark cluster (2 workers × 2 cores), including x20 in 826 s.
 
 [docs/benchmark.md](docs/benchmark.md) has the full write-up: per-step before/after tables, why each change helped, what was tried and left out, and how Gold was verified unchanged.
 
